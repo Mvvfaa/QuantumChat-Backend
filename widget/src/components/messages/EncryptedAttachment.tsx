@@ -51,27 +51,19 @@ export function EncryptedAttachment({ file, conversationId, baseUrl }: Encrypted
   }, [file, conversationId, baseUrl]);
 
   if (loading) {
-    return (
-      <span style={{ fontSize: 12, opacity: 0.75 }}>🔒 Decrypting attachment...</span>
-    );
+    return <span className="qc-attachment-status">🔒 Decrypting attachment...</span>;
   }
 
   if (error || !objectUrl) {
-    return (
-      <span style={{ fontSize: 12, opacity: 0.75 }}>🔒 Unable to decrypt attachment</span>
-    );
+    return <span className="qc-attachment-status">🔒 Unable to decrypt attachment</span>;
   }
 
   const isImage = mimeType.startsWith('image/');
 
   if (isImage) {
     return (
-      <a href={objectUrl} download={displayName} target="_blank" rel="noreferrer">
-        <img
-          src={objectUrl}
-          alt={displayName}
-          style={{ maxWidth: '100%', borderRadius: 10, maxHeight: 180, objectFit: 'cover' }}
-        />
+      <a href={objectUrl} download={displayName} target="_blank" rel="noreferrer" className="qc-attachment-image-link">
+        <img src={objectUrl} alt={displayName} className="qc-attachment-image" />
       </a>
     );
   }
@@ -80,7 +72,7 @@ export function EncryptedAttachment({ file, conversationId, baseUrl }: Encrypted
     <a
       href={objectUrl}
       download={displayName}
-      style={{ fontSize: 12, color: '#fff', textDecoration: 'underline', display: 'flex', alignItems: 'center', gap: 6 }}
+      className="qc-attachment-file-link"
     >
       📎 {displayName || 'Attachment'}
     </a>

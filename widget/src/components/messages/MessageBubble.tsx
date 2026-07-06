@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useWidget } from '../../context/WidgetContext';
 import { Avatar } from '../ui/Avatar';
 import { formatMessageTime } from '../../utils/helpers';
@@ -21,30 +21,64 @@ function isPopulatedAttachment(a: IAttachment | string): a is IAttachment {
   return typeof a === 'object' && a !== null && '_id' in a;
 }
 
-function ActionBtn({ label, onClick, color }: { label: string; onClick: () => void; color?: string }) {
+function IconReply() {
+  return (
+    <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a5 5 0 015 5v2M3 10l4-4M3 10l4 4" />
+    </svg>
+  );
+}
+
+function IconReact() {
+  return (
+    <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>
+  );
+}
+
+function IconEdit() {
+  return (
+    <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+    </svg>
+  );
+}
+
+function IconDelete() {
+  return (
+    <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+    </svg>
+  );
+}
+
+function MessageAction({
+  label,
+  onClick,
+  icon,
+  variant = 'default',
+}: {
+  label: string;
+  onClick: () => void;
+  icon: ReactNode;
+  variant?: 'default' | 'danger' | 'primary';
+}) {
   return (
     <button
       type="button"
       onClick={onClick}
       title={label}
-      style={{
-        fontSize: 11,
-        color: color || 'inherit',
-        background: 'rgba(255,255,255,0.08)',
-        border: 'none',
-        cursor: 'pointer',
-        padding: '4px 8px',
-        borderRadius: 8,
-        fontWeight: 500,
-      }}
+      className={`qc-msg-action-btn qc-msg-action-btn--${variant}`}
     >
-      {label}
+      {icon}
+      <span>{label}</span>
     </button>
   );
 }
 
 export function MessageBubble({ message, isOwn, onReply }: MessageBubbleProps) {
-  const { state, api, dispatch, theme: uiTheme, config } = useWidget();
+  const { state, api, dispatch, config } = useWidget();
   const [showReactions, setShowReactions] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState(message.content);
@@ -53,8 +87,8 @@ export function MessageBubble({ message, isOwn, onReply }: MessageBubbleProps) {
 
   if (message.isDeleted) {
     return (
-      <div style={{ display: 'flex', justifyContent: isOwn ? 'flex-end' : 'flex-start', marginBottom: 8 }}>
-        <p style={{ fontSize: 12, color: uiTheme.colors.textMuted, fontStyle: 'italic', margin: 0 }}>Message deleted</p>
+      <div className={`qc-message-row qc-message-row--${isOwn ? 'own' : 'other'}`}>
+        <p className="qc-message-deleted">Message deleted</p>
       </div>
     );
   }
@@ -80,58 +114,33 @@ export function MessageBubble({ message, isOwn, onReply }: MessageBubbleProps) {
   const baseUrl = config.apiUrl || 'http://localhost:4000';
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        gap: 8,
-        marginBottom: 14,
-        flexDirection: isOwn ? 'row-reverse' : 'row',
-        alignItems: 'flex-end',
-      }}
-    >
+    <div className={`qc-message-row qc-message-row--${isOwn ? 'own' : 'other'}`}>
       {!isOwn && <Avatar name={message.senderId.displayName} src={message.senderId.avatarUrl} size="sm" />}
 
-      <div style={{ maxWidth: '78%', display: 'flex', flexDirection: 'column', alignItems: isOwn ? 'flex-end' : 'flex-start' }}>
-        {!isOwn && (
-          <span style={{ fontSize: 11, fontWeight: 600, color: uiTheme.colors.textSecondary, marginBottom: 4, marginLeft: 4 }}>
-            {message.senderId.displayName}
-          </span>
-        )}
+      <div className="qc-message-content">
+        {!isOwn && <span className="qc-message-sender">{message.senderId.displayName}</span>}
 
         {isEditing ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, width: '100%' }}>
+          <div className="qc-message-edit">
             <textarea
               value={editContent}
               onChange={(e) => setEditContent(e.target.value)}
-              className="qc-search-input"
-              style={{ borderRadius: 12, padding: '10px 12px', fontSize: 13, minWidth: 200, minHeight: 60, resize: 'vertical' }}
+              className="qc-search-input qc-message-edit-input"
               autoFocus
             />
-            <div style={{ display: 'flex', gap: 8 }}>
-              <ActionBtn label="Save" onClick={handleEdit} color={uiTheme.colors.accentLight} />
-              <ActionBtn label="Cancel" onClick={() => setIsEditing(false)} />
+            <div className="qc-message-edit-actions">
+              <MessageAction label="Save" onClick={handleEdit} icon={<IconEdit />} variant="primary" />
+              <MessageAction label="Cancel" onClick={() => setIsEditing(false)} icon={<IconDelete />} />
             </div>
           </div>
         ) : (
-          <div
-            className={isOwn ? 'qc-bubble-own' : 'qc-bubble-other'}
-            style={{
-              padding: '10px 14px',
-              borderRadius: isOwn ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
-              fontSize: 14,
-              lineHeight: 1.5,
-            }}
-          >
+          <div className={`qc-message-bubble ${isOwn ? 'qc-bubble-own' : 'qc-bubble-other'}`}>
             {message.replyTo && typeof message.replyTo === 'object' && (
-              <div style={{ fontSize: 11, marginBottom: 6, paddingBottom: 6, borderBottom: '1px solid rgba(255,255,255,0.15)', opacity: 0.85 }}>
-                ↩ Replying to a message
-              </div>
+              <div className="qc-message-reply-preview">↩ Replying to a message</div>
             )}
-            {message.content && (
-              <p style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{message.content}</p>
-            )}
+            {message.content && <p className="qc-message-text">{message.content}</p>}
             {attachments.length > 0 && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: message.content ? 8 : 0 }}>
+              <div className={`qc-message-attachments${message.content ? ' qc-message-attachments--spaced' : ''}`}>
                 {attachments.map((file) => {
                   if (file.isEncrypted) {
                     return (
@@ -146,72 +155,53 @@ export function MessageBubble({ message, isOwn, onReply }: MessageBubbleProps) {
                   const fileUrl = file.url?.startsWith('http') ? file.url : `${baseUrl}${file.url}`;
                   const isImage = file.mimeType?.startsWith('image/');
                   return isImage ? (
-                    <a key={file._id} href={fileUrl} target="_blank" rel="noreferrer">
-                      <img src={fileUrl} alt={file.originalName} style={{ maxWidth: '100%', borderRadius: 10, maxHeight: 180, objectFit: 'cover' }} />
+                    <a key={file._id} href={fileUrl} target="_blank" rel="noreferrer" className="qc-attachment-image-link">
+                      <img src={fileUrl} alt={file.originalName} className="qc-attachment-image" />
                     </a>
                   ) : (
-                    <a
-                      key={file._id}
-                      href={fileUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      style={{ fontSize: 12, color: '#fff', textDecoration: 'underline', display: 'flex', alignItems: 'center', gap: 6 }}
-                    >
+                    <a key={file._id} href={fileUrl} target="_blank" rel="noreferrer" className="qc-attachment-file-link">
                       📎 {file.originalName || 'Attachment'}
                     </a>
                   );
                 })}
               </div>
             )}
-            {message.isEdited && <span style={{ fontSize: 10, opacity: 0.7 }}> (edited)</span>}
+            {message.isEdited && <span className="qc-message-edited">edited</span>}
           </div>
         )}
 
         {message.reactions && message.reactions.length > 0 && (
-          <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+          <div className="qc-message-reactions">
             {message.reactions.map((r, i) => (
-              <span
-                key={i}
-                style={{
-                  fontSize: 12,
-                  background: uiTheme.colors.navy700,
-                  border: `1px solid ${uiTheme.colors.border}`,
-                  borderRadius: 12,
-                  padding: '2px 8px',
-                }}
-              >
-                {r.emoji}
-              </span>
+              <span key={i} className="qc-reaction-pill">{r.emoji}</span>
             ))}
           </div>
         )}
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, flexDirection: isOwn ? 'row-reverse' : 'row', flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 10, color: uiTheme.colors.textMuted }}>{formatMessageTime(message.createdAt)}</span>
-          {isOwn && (
-            <span style={{ fontSize: 10, color: isRead ? uiTheme.colors.accentLight : uiTheme.colors.textMuted }}>
-              {isRead ? '✓✓' : '✓'}
-            </span>
-          )}
+        <div className="qc-message-meta">
+          <span>{formatMessageTime(message.createdAt)}</span>
+          {isOwn && <span className={isRead ? 'qc-read-receipt qc-read-receipt--read' : 'qc-read-receipt'}>{isRead ? '✓✓' : '✓'}</span>}
         </div>
 
         {!isEditing && (
-          <div style={{ display: 'flex', gap: 4, marginTop: 6, flexWrap: 'wrap', justifyContent: isOwn ? 'flex-end' : 'flex-start' }}>
-            <ActionBtn label="Reply" onClick={() => onReply(message)} />
+          <div className="qc-message-actions">
+            <MessageAction label="Reply" onClick={() => onReply(message)} icon={<IconReply />} />
             {state.settings.allowReactions && (
-              <ActionBtn label="React" onClick={() => setShowReactions((v) => !v)} />
+              <MessageAction label="React" onClick={() => setShowReactions((v) => !v)} icon={<IconReact />} />
             )}
             {isOwn && state.settings.allowEditing && (
-              <ActionBtn label="Edit" onClick={() => setIsEditing(true)} color={uiTheme.colors.accentLight} />
+              <MessageAction label="Edit" onClick={() => setIsEditing(true)} icon={<IconEdit />} variant="primary" />
             )}
-            {isOwn && <ActionBtn label="Delete" onClick={handleDelete} color={uiTheme.colors.error} />}
+            {isOwn && (
+              <MessageAction label="Delete" onClick={handleDelete} icon={<IconDelete />} variant="danger" />
+            )}
           </div>
         )}
 
         {showReactions && (
-          <div style={{ display: 'flex', gap: 4, marginTop: 6, padding: '4px 8px', background: uiTheme.colors.navy800, borderRadius: 12, border: `1px solid ${uiTheme.colors.border}` }}>
+          <div className="qc-reaction-picker">
             {REACTIONS.map((emoji) => (
-              <button key={emoji} type="button" onClick={() => handleReact(emoji)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 16 }}>
+              <button key={emoji} type="button" onClick={() => handleReact(emoji)} className="qc-reaction-picker-btn">
                 {emoji}
               </button>
             ))}

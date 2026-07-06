@@ -2,7 +2,6 @@ import { useRef, useEffect, useCallback } from 'react';
 import { useWidget } from '../../context/WidgetContext';
 import { MessageBubble } from './MessageBubble';
 import { processMessageList } from '../../utils/messageCrypto';
-import { theme } from '../../theme';
 import { normalizeId } from '../../utils/helpers';
 import type { IMessage } from '@quantum-chat/shared';
 
@@ -37,34 +36,9 @@ export function MessageList({ onReply }: { onReply: (message: IMessage) => void 
   }, [messages.length]);
 
   return (
-    <div
-      ref={containerRef}
-      onScroll={handleScroll}
-      className="qc-scrollbar"
-      style={{
-        flex: 1,
-        overflowY: 'auto',
-        padding: '16px 14px',
-        background: `linear-gradient(180deg, ${theme.colors.navy900} 0%, ${theme.colors.navy950} 100%)`,
-        minHeight: 0,
-      }}
-    >
+    <div ref={containerRef} onScroll={handleScroll} className="qc-message-list qc-scrollbar">
       {state.hasMoreMessages[convId] && (
-        <button
-          type="button"
-          onClick={loadMore}
-          style={{
-            width: '100%',
-            textAlign: 'center',
-            fontSize: 12,
-            color: theme.colors.accentLight,
-            padding: '8px 0',
-            background: 'none',
-            border: 'none',
-            cursor: 'pointer',
-            marginBottom: 8,
-          }}
-        >
+        <button type="button" onClick={loadMore} className="qc-load-more-btn">
           Load earlier messages
         </button>
       )}
@@ -83,13 +57,13 @@ export function MessageList({ onReply }: { onReply: (message: IMessage) => void 
       ))}
 
       {typingUsers.length > 0 && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 4px' }}>
+        <div className="qc-typing-indicator">
           <div style={{ display: 'flex', gap: 4 }}>
             <span className="qc-typing-dot" style={{ width: 6, height: 6, borderRadius: '50%' }} />
             <span className="qc-typing-dot" style={{ width: 6, height: 6, borderRadius: '50%' }} />
             <span className="qc-typing-dot" style={{ width: 6, height: 6, borderRadius: '50%' }} />
           </div>
-          <span style={{ fontSize: 12, color: theme.colors.textMuted }}>typing...</span>
+          <span>typing...</span>
         </div>
       )}
     </div>

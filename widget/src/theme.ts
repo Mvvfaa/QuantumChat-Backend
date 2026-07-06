@@ -1,33 +1,33 @@
-/** Quantum Chat — Dark Blue Professional Theme */
+/** Quantum Chat — Light Professional Theme */
 import type { WebsiteBranding } from '@quantum-chat/shared';
 
 export const theme = {
   colors: {
-    navy950: '#050D1A',
-    navy900: '#0A1628',
-    navy800: '#0F2240',
-    navy700: '#1A365D',
-    navy600: '#234876',
-    navy500: '#2D4A6F',
+    navy950: '#F8FAFC',
+    navy900: '#FFFFFF',
+    navy800: '#F1F5F9',
+    navy700: '#E2E8F0',
+    navy600: '#CBD5E1',
+    navy500: '#94A3B8',
     accent: '#3B82F6',
-    accentLight: '#60A5FA',
-    accentDark: '#2563EB',
-    accentGlow: 'rgba(59, 130, 246, 0.35)',
-    text: '#F1F5F9',
-    textSecondary: '#94A3B8',
+    accentLight: '#2563EB',
+    accentDark: '#4F46E5',
+    accentGlow: 'rgba(59, 130, 246, 0.2)',
+    text: '#0F172A',
+    textSecondary: '#475569',
     textMuted: '#64748B',
-    border: 'rgba(148, 163, 184, 0.12)',
-    borderLight: 'rgba(148, 163, 184, 0.2)',
-    success: '#22C55E',
-    error: '#F87171',
-    bubbleOwn: 'linear-gradient(135deg, #2563EB 0%, #1D4ED8 100%)',
-    bubbleOther: '#1A365D',
-    inputBg: 'rgba(15, 34, 64, 0.8)',
+    border: 'rgba(15, 23, 42, 0.08)',
+    borderLight: 'rgba(15, 23, 42, 0.12)',
+    success: '#16A34A',
+    error: '#EF4444',
+    bubbleOwn: 'linear-gradient(135deg, #3B82F6 0%, #6366F1 100%)',
+    bubbleOther: 'linear-gradient(180deg, #FFFFFF 0%, #F8FAFC 100%)',
+    inputBg: '#FFFFFF',
   },
   shadow: {
-    widget: '0 25px 50px -12px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(59, 130, 246, 0.15)',
-    launcher: '0 8px 32px rgba(37, 99, 235, 0.4), 0 0 0 1px rgba(59, 130, 246, 0.2)',
-    bubble: '0 2px 8px rgba(0, 0, 0, 0.2)',
+    widget: '0 25px 50px -12px rgba(15, 23, 42, 0.12), 0 0 0 1px rgba(59, 130, 246, 0.08)',
+    launcher: '0 8px 32px rgba(59, 130, 246, 0.25), 0 0 0 1px rgba(59, 130, 246, 0.12)',
+    bubble: '0 2px 8px rgba(15, 23, 42, 0.06)',
   },
   radius: {
     widget: 20,
@@ -73,8 +73,7 @@ export interface ResolvedTheme {
 
 export function resolveTheme(branding?: Partial<WebsiteBranding>): ResolvedTheme {
   const accent = branding?.accentColor || theme.colors.accent;
-  const primary = branding?.primaryColor || theme.colors.navy800;
-  const secondary = branding?.secondaryColor || theme.colors.navy700;
+  const primary = branding?.primaryColor || '#6366F1';
 
   return {
     ...theme,
@@ -82,17 +81,14 @@ export function resolveTheme(branding?: Partial<WebsiteBranding>): ResolvedTheme
       ...theme.colors,
       accent,
       accentLight: accent,
-      accentDark: accent,
-      accentGlow: `${accent}59`,
-      navy900: primary,
-      navy800: primary,
-      navy700: secondary,
+      accentDark: primary,
+      accentGlow: `${accent}33`,
       bubbleOwn: `linear-gradient(135deg, ${accent} 0%, ${primary} 100%)`,
-      bubbleOther: secondary,
+      bubbleOther: theme.colors.bubbleOther,
     },
     shadow: {
       ...theme.shadow,
-      launcher: `0 8px 32px ${accent}66, 0 0 0 1px ${accent}40`,
+      launcher: `0 8px 32px ${accent}40, 0 0 0 1px ${accent}20`,
     },
   };
 }
