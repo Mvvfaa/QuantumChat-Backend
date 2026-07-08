@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
+export const KEY_SET_SIZE = 5;
 
 const userSchema = new mongoose.Schema(
   {
@@ -25,15 +26,21 @@ const userSchema = new mongoose.Schema(
       required: true,
       select: false,
     },
-    // Public half of the user's current X25519 keypair (32 bytes, hex-encoded
-    // = 64 chars). The client rotates this every 30 minutes; the matching
-    // private key never leaves the device (kept in a local keyring).
-    publicKey: {
-      type: String,
+    // Pool of 5 X25519 public keys (32 bytes, hex-encoded = 64 chars each).
+    // Senders pick one at random per message, so the same conversation
+    // spreads ciphertext across multiple keys instead of always the same
+    // one. The whole set of 5 is replaced on every login and every 30-minute
+    // rotation; matching private keys never leave the device (kept in a
+    // local keyring so history under retired keys stays decryptable).
+    publicKeys: {
+      type: [String],
       required: true,
-      match: HEX_64,
+      validate: {
+        validator: (arr) => Array.isArray(arr) && arr.length === KEY_SET_SIZE && arr.every((k) => HEX_64.test(k)),
+        message: `publicKeys must contain exactly ${KEY_SET_SIZE} 64-character hex public keys`,
+      },
     },
-    // When this publicKey was last rotated in, for visibility/debugging.
+    // When this publicKeys set was last rotated in, for visibility/debugging.
     keyRotatedAt: {
       type: Date,
       default: Date.now,
@@ -60,7 +67,7 @@ userSchema.methods.toPublicJSON = function toPublicJSON() {
     id: this._id,
     username: this.username,
     email: this.email,
-    publicKey: this.publicKey,
+    publicKeys: this.publicKeys,
     keyRotatedAt: this.keyRotatedAt,
     lastLoginAt: this.lastLoginAt,
   };
