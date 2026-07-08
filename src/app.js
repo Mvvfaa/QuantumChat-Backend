@@ -14,7 +14,24 @@ export function createApp() {
   // on a different port), so the default same-origin resource policy would
   // block the browser from reading any response, including plain JSON.
   app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
-  app.use(cors({ origin: process.env.CLIENT_URL || '*' }));
+
+  // CLIENT_URL may be a single origin or a comma-separated list, so the same
+  // deployment can serve both local dev and one or more deployed frontends
+  // (e.g. a Vercel preview URL plus the production domain).
+  const allowedOrigins = (process.env.CLIENT_URL || '*')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+  app.use(
+    cors({
+      origin(origin, callback) {
+        if (allowedOrigins.includes('*') || !origin || allowedOrigins.includes(origin)) {
+          return callback(null, true);
+        }
+        return callback(new Error(`Origin ${origin} is not allowed by CORS`));
+      },
+    })
+  );
   app.use(express.json());
 
   app.get('/api/health', (req, res) => res.json({ success: true, data: { status: 'ok' } }));
