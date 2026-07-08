@@ -28,7 +28,13 @@ export async function register(req, res) {
       return res.status(409).json({ success: false, error: 'Username or email already in use' });
     }
 
-    const user = await User.create({ username, email, password, publicKey: publicKey.toLowerCase() });
+    const user = await User.create({
+      username,
+      email,
+      password,
+      publicKey: publicKey.toLowerCase(),
+      lastLoginAt: new Date(),
+    });
     const token = generateToken(user._id);
 
     res.status(201).json({ success: true, data: { token, user: user.toPublicJSON() } });
@@ -48,6 +54,9 @@ export async function login(req, res) {
     if (!user || !(await user.comparePassword(password))) {
       return res.status(401).json({ success: false, error: 'Invalid email or password' });
     }
+
+    user.lastLoginAt = new Date();
+    await user.save();
 
     const token = generateToken(user._id);
     res.json({ success: true, data: { token, user: user.toPublicJSON() } });
