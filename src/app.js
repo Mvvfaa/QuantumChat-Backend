@@ -15,25 +15,12 @@ export function createApp() {
   // block the browser from reading any response, including plain JSON.
   app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 
-  // CLIENT_URL may be a single origin or a comma-separated list, so the same
-  // deployment can serve both local dev and one or more deployed frontends
-  // (e.g. a Vercel preview URL plus the production domain).
-  const allowedOrigins = (process.env.CLIENT_URL || '*')
-    .split(',')
-    .map((o) => o.trim())
-    .filter(Boolean);
-  app.use(
-    cors({
-      origin(origin, callback) {
-        // Reject by simply not allowing the origin (callback(null, false))
-        // rather than passing an Error — an Error here falls through to the
-        // Express error handler as a generic 500 with no CORS header at all,
-        // which reads as a confusing crash instead of a plain "not allowed".
-        const allowed = allowedOrigins.includes('*') || !origin || allowedOrigins.includes(origin);
-        callback(null, allowed);
-      },
-    })
-  );
+  // Auth is JWT-bearer-token-based, not cookie-based, so there's no CSRF
+  // exposure from allowing any origin to call this API — and no need to
+  // rely on getting a CLIENT_URL env var exactly right on every deployment.
+  // (An earlier version restricted this via CLIENT_URL; that kept silently
+  // mismatching on Vercel and blocking real requests, so it's gone.)
+  app.use(cors());
   app.use(express.json());
 
   app.get('/api/health', (req, res) => res.json({ success: true, data: { status: 'ok' } }));
