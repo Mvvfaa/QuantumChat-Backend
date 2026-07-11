@@ -843,6 +843,121 @@ input:focus-visible,
   color: var(--accent);
 }
 
+.composer-recording {
+  background: var(--bg-surface);
+}
+
+.voice-recording-status {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.voice-recording-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ef4444;
+  flex-shrink: 0;
+  animation: voice-pulse 1s ease-in-out infinite;
+}
+
+@keyframes voice-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.85);
+  }
+}
+
+.voice-recording-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.voice-cancel-btn:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.voice-mic-btn,
+.voice-stop-btn {
+  background: var(--accent);
+}
+
+.voice-player {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 180px;
+  max-width: 260px;
+  padding: 6px 4px 8px;
+}
+
+.voice-play-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: var(--text-inverse);
+  flex-shrink: 0;
+  border: none;
+  cursor: pointer;
+}
+
+.voice-play-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.message-bubble.theirs .voice-play-btn {
+  background: var(--accent-solid, var(--accent));
+}
+
+.voice-wave {
+  flex: 1;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+  overflow: hidden;
+  min-width: 64px;
+}
+
+.message-bubble.theirs .voice-wave {
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.voice-wave-fill {
+  height: 100%;
+  background: currentColor;
+  opacity: 0.85;
+  border-radius: inherit;
+}
+
+.voice-duration {
+  font-size: 11px;
+  opacity: 0.8;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.attachment-chip-voice .file-icon {
+  color: var(--accent);
+}
+
 .composer input {
   flex: 1;
   padding: 10px 14px;

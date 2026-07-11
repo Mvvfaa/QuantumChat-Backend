@@ -5,12 +5,21 @@ import { connectSocket, getSocket } from '../api/socket.js';
 import { sealMessage, unsealMessage, sealBytes, pickRandom } from '../crypto/keys.js';
 import { parseKeyFile } from '../crypto/keyFile.js';
 import { getCurrentKeySet, findSecretKeyForPublicKey } from '../crypto/keyStorage.js';
+import { cacheVoiceNote, normalizeAttachment, pickRecorderMimeType } from '../crypto/voiceCache.js';
+import { playReceiveSound, playSendSound } from '../utils/sounds.js';
 import UserList from '../components/UserList.jsx';
 import MessageBubble from '../components/MessageBubble.jsx';
+
+const MAX_VOICE_SECONDS = 60;
 
 function formatLastSeen(iso) {
   if (!iso) return 'never logged in';
   return `last seen ${new Date(iso).toLocaleString()}`;
+}
+
+function formatVoiceTimer(seconds) {
+  const s = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
 export default function Chat() {
@@ -27,11 +36,19 @@ export default function Chat() {
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [hasUnread, setHasUnread] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [recordSeconds, setRecordSeconds] = useState(0);
+  const [sendingVoice, setSendingVoice] = useState(false);
   const messageListRef = useRef(null);
   const bottomRef = useRef(null);
   const fileInputRef = useRef(null);
   const keyFileInputRef = useRef(null);
   const selectedUserRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const mediaStreamRef = useRef(null);
+  const recordChunksRef = useRef([]);
+  const recordTimerRef = useRef(null);
+  const recordStartedAtRef = useRef(0);
   selectedUserRef.current = selectedUser;
 
   // Scroll to bottom helper
@@ -66,10 +83,17 @@ export default function Chat() {
     (raw) => {
       const isMine = String(raw.from) === String(user.id);
       const envelope = isMine ? raw.forSender : raw.forRecipient;
-      if (!envelope?.targetPublicKey) return { ...raw, text: null };
+      if (!envelope?.targetPublicKey) {
+        return { ...raw, id: raw.id || raw._id, attachment: normalizeAttachment(raw.attachment), text: null };
+      }
       const mySecretKey = resolveMySecretKey(envelope.targetPublicKey);
       const text = mySecretKey ? unsealMessage(envelope, mySecretKey) : null;
-      return { ...raw, text };
+      return {
+        ...raw,
+        id: raw.id || raw._id,
+        attachment: normalizeAttachment(raw.attachment),
+        text,
+      };
     },
     [user, resolveMySecretKey]
   );
@@ -93,6 +117,10 @@ export default function Chat() {
       const current = selectedUserRef.current;
       const otherId = String(raw.from) === String(user.id) ? raw.to : raw.from;
       if (!current || String(current.id) !== String(otherId)) return;
+
+      if (String(raw.from) !== String(user.id)) {
+        playReceiveSound();
+      }
 
       setMessages((prev) => {
         const next = [...prev, decorate(raw)];
@@ -138,6 +166,13 @@ export default function Chat() {
             const same =
               prev.length === next.length &&
               prev.every((m, i) => (m.id || m._id) === (next[i].id || next[i]._id));
+            if (!same && !firstLoad) {
+              const prevIds = new Set(prev.map((m) => String(m.id || m._id)));
+              const hasNewIncoming = next.some(
+                (m) => !prevIds.has(String(m.id || m._id)) && String(m.from) !== String(user.id)
+              );
+              if (hasNewIncoming) playReceiveSound();
+            }
             return same ? prev : next;
           });
           if (firstLoad) {
@@ -179,7 +214,12 @@ export default function Chat() {
       // this conversation's ciphertext ends up spread across multiple keys
       // instead of always the same one.
       const myKey = pickRandom(getCurrentKeySet(user.id));
-      const recipientPublicKey = pickRandom(selectedUser.publicKeys);
+      const recipientKeys = (selectedUser.publicKeys || []).filter(Boolean);
+      if (!myKey?.publicKey || recipientKeys.length === 0) {
+        setError('Missing encryption keys for this conversation');
+        return;
+      }
+      const recipientPublicKey = pickRandom(recipientKeys);
       // Sealed twice: once to the recipient (so they can read it), once to
       // my own key (so I can read my own sent history back — the ephemeral
       // key from either seal is discarded right after sealing).
@@ -188,10 +228,52 @@ export default function Chat() {
       const { data } = await client.post('/messages', { to: selectedUser.id, forRecipient, forSender });
       setMessages((prev) => [...prev, decorate(data.data)]);
       setDraft('');
+      playSendSound();
       setTimeout(() => scrollToBottom('smooth'), 50);
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to send message');
     }
+  }
+
+  async function sendAttachmentFile(file, { plainBytes, cacheAsVoice } = {}) {
+    if (!file || !selectedUser) return;
+    const myKey = pickRandom(getCurrentKeySet(user.id));
+    const recipientKeys = (selectedUser.publicKeys || []).filter(Boolean);
+    if (!myKey?.publicKey || recipientKeys.length === 0) {
+      setError('Missing encryption keys for this conversation');
+      return;
+    }
+    const recipientPublicKey = pickRandom(recipientKeys);
+    const fileBytes = plainBytes || new Uint8Array(await file.arrayBuffer());
+    // Attachments are sealed to the recipient only (not doubled like text)
+    // to avoid uploading every file twice — the sender keeps their own
+    // copy locally, so they don't need a server-side readable copy too.
+    const sealed = sealBytes(fileBytes, recipientPublicKey);
+
+    const formData = new FormData();
+    formData.append('file', new Blob([sealed.cipherBytes], { type: file.type || 'application/octet-stream' }), file.name);
+    formData.append('recipientId', selectedUser.id);
+    formData.append('nonce', sealed.nonce);
+    formData.append('ephemeralPublicKey', sealed.ephemeralPublicKey);
+    formData.append('targetPublicKey', sealed.targetPublicKey);
+    const uploadRes = await client.post('/attachments', formData);
+    const attachmentId = uploadRes.data.data.id;
+
+    if (cacheAsVoice) {
+      cacheVoiceNote(attachmentId, { bytes: fileBytes, mimetype: file.type || 'audio/webm' });
+    }
+
+    const forRecipient = sealMessage('', recipientPublicKey);
+    const forSender = sealMessage('', myKey.publicKey);
+    const { data } = await client.post('/messages', {
+      to: selectedUser.id,
+      forRecipient,
+      forSender,
+      attachmentId,
+    });
+    setMessages((prev) => [...prev, decorate(data.data)]);
+    playSendSound();
+    setTimeout(() => scrollToBottom('smooth'), 50);
   }
 
   async function handleFileChange(e) {
@@ -199,36 +281,137 @@ export default function Chat() {
     e.target.value = '';
     if (!file || !selectedUser) return;
     try {
-      const myKey = pickRandom(getCurrentKeySet(user.id));
-      const recipientPublicKey = pickRandom(selectedUser.publicKeys);
-      const fileBytes = new Uint8Array(await file.arrayBuffer());
-      // Attachments are sealed to the recipient only (not doubled like text)
-      // to avoid uploading every file twice — the sender keeps their own
-      // copy locally, so they don't need a server-side readable copy too.
-      const sealed = sealBytes(fileBytes, recipientPublicKey);
-
-      const formData = new FormData();
-      formData.append('file', new Blob([sealed.cipherBytes]), file.name);
-      formData.append('recipientId', selectedUser.id);
-      formData.append('nonce', sealed.nonce);
-      formData.append('ephemeralPublicKey', sealed.ephemeralPublicKey);
-      formData.append('targetPublicKey', sealed.targetPublicKey);
-      const uploadRes = await client.post('/attachments', formData);
-
-      const forRecipient = sealMessage('', recipientPublicKey);
-      const forSender = sealMessage('', myKey.publicKey);
-      const { data } = await client.post('/messages', {
-        to: selectedUser.id,
-        forRecipient,
-        forSender,
-        attachmentId: uploadRes.data.data.id,
-      });
-      setMessages((prev) => [...prev, decorate(data.data)]);
-      setTimeout(() => scrollToBottom('smooth'), 50);
+      await sendAttachmentFile(file);
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to send attachment');
     }
   }
+
+  function clearRecordingResources({ keepChunks = false } = {}) {
+    if (recordTimerRef.current) {
+      clearInterval(recordTimerRef.current);
+      recordTimerRef.current = null;
+    }
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+      mediaStreamRef.current = null;
+    }
+    mediaRecorderRef.current = null;
+    if (!keepChunks) recordChunksRef.current = [];
+    setRecordSeconds(0);
+    setRecording(false);
+  }
+
+  async function startVoiceRecording() {
+    if (!selectedUser || recording || sendingVoice) return;
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      setError('Voice notes are not supported in this browser');
+      return;
+    }
+    try {
+      setError('');
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+        },
+      });
+      mediaStreamRef.current = stream;
+      const mimeType = pickRecorderMimeType();
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+      recordChunksRef.current = [];
+      recordStartedAtRef.current = Date.now();
+
+      recorder.ondataavailable = (event) => {
+        if (event.data?.size > 0) recordChunksRef.current.push(event.data);
+      };
+
+      recorder.onerror = () => {
+        clearRecordingResources();
+        setError('Voice recording failed');
+      };
+
+      recorder.onstop = async () => {
+        const chunks = recordChunksRef.current.slice();
+        const type = (recorder.mimeType || mimeType || 'audio/webm').split(';')[0];
+        clearRecordingResources();
+        if (!chunks.length) {
+          setError('No audio captured — try again');
+          return;
+        }
+
+        const blob = new Blob(chunks, { type: type || 'audio/webm' });
+        if (blob.size < 256) {
+          setError('Recording too short — hold a bit longer');
+          return;
+        }
+
+        const ext = type.includes('mp4') ? 'm4a' : type.includes('ogg') ? 'ogg' : 'webm';
+        const file = new File([blob], `voice-note-${Date.now()}.${ext}`, { type: type || 'audio/webm' });
+        const plainBytes = new Uint8Array(await blob.arrayBuffer());
+
+        setSendingVoice(true);
+        try {
+          await sendAttachmentFile(file, { plainBytes, cacheAsVoice: true });
+        } catch (err) {
+          setError(err.response?.data?.error || 'Failed to send voice note');
+        } finally {
+          setSendingVoice(false);
+        }
+      };
+
+      recorder.start(200);
+      setRecording(true);
+      setRecordSeconds(0);
+      recordTimerRef.current = setInterval(() => {
+        const elapsed = Math.floor((Date.now() - recordStartedAtRef.current) / 1000);
+        setRecordSeconds(elapsed);
+        if (elapsed >= MAX_VOICE_SECONDS) {
+          stopVoiceRecording();
+        }
+      }, 200);
+    } catch {
+      clearRecordingResources();
+      setError('Microphone permission is required for voice notes');
+    }
+  }
+
+  function stopVoiceRecording() {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder || recorder.state === 'inactive') {
+      clearRecordingResources();
+      return;
+    }
+    try {
+      if (recorder.state === 'recording') recorder.requestData();
+    } catch {
+      // some browsers throw if requestData isn't supported mid-stream
+    }
+    recorder.stop();
+  }
+
+  function cancelVoiceRecording() {
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== 'inactive') {
+      recorder.ondataavailable = null;
+      recorder.onstop = () => clearRecordingResources();
+      try {
+        recorder.stop();
+      } catch {
+        clearRecordingResources();
+      }
+      return;
+    }
+    clearRecordingResources();
+  }
+
+  useEffect(() => {
+    return () => {
+      if (recordTimerRef.current) clearInterval(recordTimerRef.current);
+      if (mediaStreamRef.current) mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+    };
+  }, []);
 
   async function handleGenerateKeys() {
     await regenerateKeys();
@@ -401,31 +584,81 @@ export default function Chat() {
 
                 {error && <div className="auth-error">{error}</div>}
 
-                <form className="composer" onSubmit={handleSend}>
-                  <button
-                    type="button"
-                    className="attach-button"
-                    onClick={() => fileInputRef.current?.click()}
-                    aria-label="Attach file to message"
-                  >
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-                    </svg>
-                  </button>
-                  <input ref={fileInputRef} type="file" hidden onChange={handleFileChange} />
-                  <input
-                    placeholder="Type an encrypted message…"
-                    value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
-                    aria-label="Type message body"
-                  />
-                  <button type="submit" className="send-button" aria-label="Send encrypted message">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <line x1="22" y1="2" x2="11" y2="13" />
-                      <polygon points="22 2 15 22 11 13 2 9 22 2" />
-                    </svg>
-                  </button>
-                </form>
+                {recording ? (
+                  <div className="composer composer-recording">
+                    <button
+                      type="button"
+                      className="attach-button voice-cancel-btn"
+                      onClick={cancelVoiceRecording}
+                      aria-label="Cancel voice note"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18" />
+                        <line x1="6" y1="6" x2="18" y2="18" />
+                      </svg>
+                    </button>
+                    <div className="voice-recording-status">
+                      <span className="voice-recording-dot" />
+                      <span>Recording {formatVoiceTimer(recordSeconds)}</span>
+                      <span className="voice-recording-hint">max {MAX_VOICE_SECONDS}s</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="send-button voice-stop-btn"
+                      onClick={stopVoiceRecording}
+                      aria-label="Send voice note"
+                    >
+                      <svg viewBox="0 0 24 24" fill="currentColor">
+                        <rect x="6" y="6" width="12" height="12" rx="2" />
+                      </svg>
+                    </button>
+                  </div>
+                ) : (
+                  <form className="composer" onSubmit={handleSend}>
+                    <button
+                      type="button"
+                      className="attach-button"
+                      onClick={() => fileInputRef.current?.click()}
+                      aria-label="Attach file to message"
+                      disabled={sendingVoice}
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                      </svg>
+                    </button>
+                    <input ref={fileInputRef} type="file" hidden onChange={handleFileChange} />
+                    <input
+                      placeholder={sendingVoice ? 'Sending voice note…' : 'Type an encrypted message…'}
+                      value={draft}
+                      onChange={(e) => setDraft(e.target.value)}
+                      aria-label="Type message body"
+                      disabled={sendingVoice}
+                    />
+                    {draft.trim() ? (
+                      <button type="submit" className="send-button" aria-label="Send encrypted message" disabled={sendingVoice}>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <line x1="22" y1="2" x2="11" y2="13" />
+                          <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                        </svg>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="send-button voice-mic-btn"
+                        onClick={startVoiceRecording}
+                        aria-label="Record voice note"
+                        disabled={sendingVoice}
+                      >
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                          <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                          <line x1="12" y1="19" x2="12" y2="23" />
+                          <line x1="8" y1="23" x2="16" y2="23" />
+                        </svg>
+                      </button>
+                    )}
+                  </form>
+                )}
               </>
             )}
           </>
