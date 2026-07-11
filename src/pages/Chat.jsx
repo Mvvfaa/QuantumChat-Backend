@@ -3,6 +3,7 @@ import { useAuth } from '../context/AuthContext.jsx';
 import client from '../api/client.js';
 import { connectSocket, getSocket } from '../api/socket.js';
 import { sealMessage, unsealMessage, sealBytes, pickRandom } from '../crypto/keys.js';
+import { parseKeyFile } from '../crypto/keyFile.js';
 import { getCurrentKeySet, findSecretKeyForPublicKey } from '../crypto/keyStorage.js';
 import UserList from '../components/UserList.jsx';
 import MessageBubble from '../components/MessageBubble.jsx';
@@ -13,7 +14,7 @@ function formatLastSeen(iso) {
 }
 
 export default function Chat() {
-  const { user, logout, regenerateKeys, hasLocalKeyring } = useAuth();
+  const { user, logout, regenerateKeys, importKeys, hasLocalKeyring } = useAuth();
 
   const [users, setUsers] = useState([]);
   const [selectedUser, setSelectedUser] = useState(null);
@@ -21,18 +22,10 @@ export default function Chat() {
   const [draft, setDraft] = useState('');
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-
-  // UI loading states
-  const [loadingUsers, setLoadingUsers] = useState(false);
-  const [loadingMessages, setLoadingMessages] = useState(false);
-
-  // Scroll tracking states
-  const [hasUnread, setHasUnread] = useState(false);
-
-  const messageListRef = useRef(null);
+  const [importError, setImportError] = useState('');
   const bottomRef = useRef(null);
   const fileInputRef = useRef(null);
+  const keyFileInputRef = useRef(null);
   const selectedUserRef = useRef(null);
   selectedUserRef.current = selectedUser;
 
@@ -115,17 +108,39 @@ export default function Chat() {
     return () => socket.off('message:new', handleIncoming);
   }, [hasLocalKeyring, user, decorate, scrollToBottom]);
 
+  // Socket.IO gives instant delivery where it's available (local dev), but
+  // the deployed backend runs serverless (Vercel) and has no socket server
+  // at all — without this, a new message only ever showed up after a full
+  // page reload. Polling is a blunt fallback, but it works everywhere.
   useEffect(() => {
-    if (!selectedUser || !hasLocalKeyring) return;
-    setLoadingMessages(true);
-    client
-      .get(`/messages/${selectedUser.id}`)
-      .then((res) => {
-        setMessages(res.data.data.map(decorate));
-        setTimeout(() => scrollToBottom('auto'), 50);
-      })
-      .finally(() => setLoadingMessages(false));
-  }, [selectedUser, hasLocalKeyring, decorate, scrollToBottom]);
+    if (!selectedUser || !hasLocalKeyring) return undefined;
+
+    let cancelled = false;
+    const fetchMessages = () => {
+      client.get(`/messages/${selectedUser.id}`).then((res) => {
+        if (cancelled) return;
+        const next = res.data.data.map(decorate);
+        // Skip the state update (and the auto-scroll-to-bottom it triggers)
+        // when polling turns up nothing new — otherwise re-reading history
+        // gets yanked back to the bottom every 3 seconds.
+        setMessages((prev) => {
+          const same = prev.length === next.length && prev.every((m, i) => (m.id || m._id) === (next[i].id || next[i]._id));
+          return same ? prev : next;
+        });
+      });
+    };
+
+    fetchMessages();
+    const intervalId = setInterval(fetchMessages, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  }, [selectedUser, hasLocalKeyring, decorate]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
   const canChat = hasLocalKeyring;
 
@@ -198,9 +213,23 @@ export default function Chat() {
     setError('');
   }
 
+  async function handleImportKeyFile(e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const secretKeys = parseKeyFile(text);
+      importKeys(secretKeys);
+      setImportError('');
+    } catch (err) {
+      setImportError(err.message || 'Failed to import keys.txt');
+    }
+  }
+
   const title = useMemo(() => selectedUser?.username || 'Select a conversation', [selectedUser]);
   const filteredUsers = useMemo(
-    () => users.filter((u) => u.username.toLowerCase().includes(search.toLowerCase())),
+    () => users.filter((u) => u?.username?.toLowerCase().includes(search.toLowerCase())),
     [users, search]
   );
 
@@ -251,10 +280,17 @@ export default function Chat() {
           <div className="key-warning">
             <p>
               No private keys found on this device. Either you cleared local storage or this is a new device.
-              Old messages encrypted under your previous keys will remain unreadable, but you can generate a
-              fresh 5-key set to continue chatting.
+              If you saved a keys.txt backup when you signed up, import it to keep reading your existing
+              messages. Otherwise you can generate a fresh 5-key set, but old messages will stay unreadable.
             </p>
-            <button onClick={handleGenerateKeys}>Generate new keys for this device</button>
+            {importError && <div className="auth-error">{importError}</div>}
+            <div className="key-warning-actions">
+              <button onClick={() => keyFileInputRef.current?.click()}>Import keys.txt</button>
+              <input ref={keyFileInputRef} type="file" accept=".txt" hidden onChange={handleImportKeyFile} />
+              <button className="secondary-button" onClick={handleGenerateKeys}>
+                Generate new keys instead
+              </button>
+            </div>
           </div>
         )}
 

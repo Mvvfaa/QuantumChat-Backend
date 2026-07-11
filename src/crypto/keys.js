@@ -38,6 +38,15 @@ export function pickRandom(array) {
   return array[Math.floor(Math.random() * array.length)];
 }
 
+// Recovers the public half of a private key. Used to validate an imported
+// keys.txt file against an account's actual published public keys before
+// trusting it — X25519 secret keys deterministically produce one specific
+// public key, so this either matches or the file is wrong/tampered/stale.
+export function derivePublicKey(secretKeyHex) {
+  const { publicKey } = nacl.box.keyPair.fromSecretKey(fromHex(secretKeyHex));
+  return toHex(publicKey);
+}
+
 // --- Sealed-box encryption ------------------------------------------------
 // A long-term public key is only ever an input to sealMessage(), never to
 // unsealMessage(); a long-term private key is only ever an input to
