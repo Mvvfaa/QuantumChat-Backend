@@ -63,11 +63,16 @@ userSchema.methods.comparePassword = function comparePassword(candidate) {
 };
 
 userSchema.methods.toPublicJSON = function toPublicJSON() {
+  let publicKeys = Array.isArray(this.publicKeys) ? this.publicKeys.filter(Boolean) : [];
+  if (publicKeys.length === 0 && this.publicKey) {
+    publicKeys = [this.publicKey];
+  }
+
   return {
     id: this._id,
     username: this.username,
     email: this.email,
-    publicKeys: this.publicKeys,
+    publicKeys: publicKeys.map((k) => String(k).toLowerCase()),
     keyRotatedAt: this.keyRotatedAt,
     lastLoginAt: this.lastLoginAt,
   };

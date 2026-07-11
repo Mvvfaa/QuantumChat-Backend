@@ -64,12 +64,16 @@ export async function login(req, res) {
     // which of the 5 it was sealed to (targetPublicKey), so the client just
     // looks up the matching private key rather than needing "the current"
     // one to be anything in particular.
+    //
+    // Use updateOne (not document.save) so login never re-runs the full
+    // publicKeys validator — older/partial accounts would otherwise 500 here.
     user.lastLoginAt = new Date();
-    await user.save();
+    await User.updateOne({ _id: user._id }, { $set: { lastLoginAt: user.lastLoginAt } });
 
     const token = generateToken(user._id);
     res.json({ success: true, data: { token, user: user.toPublicJSON() } });
   } catch (err) {
+    console.error('login failed:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 }
