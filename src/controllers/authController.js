@@ -41,7 +41,7 @@ export async function register(req, res) {
     });
     const token = generateToken(user._id);
 
-    res.status(201).json({ success: true, data: { token, user: user.toPublicJSON() } });
+    res.status(201).json({ success: true, data: { token, user: user.toSelfJSON() } });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -71,7 +71,7 @@ export async function login(req, res) {
     await User.updateOne({ _id: user._id }, { $set: { lastLoginAt: user.lastLoginAt } });
 
     const token = generateToken(user._id);
-    res.json({ success: true, data: { token, user: user.toPublicJSON() } });
+    res.json({ success: true, data: { token, user: user.toSelfJSON() } });
   } catch (err) {
     console.error('login failed:', err);
     res.status(500).json({ success: false, error: err.message });
@@ -79,5 +79,5 @@ export async function login(req, res) {
 }
 
 export async function me(req, res) {
-  res.json({ success: true, data: { user: req.user.toPublicJSON() } });
+  res.json({ success: true, data: { user: req.user.toSelfJSON() } });
 }

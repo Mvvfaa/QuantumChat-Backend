@@ -2,6 +2,7 @@ import fs from 'fs';
 import mongoose from 'mongoose';
 import Attachment from '../models/Attachment.js';
 import { resolveUploadPath } from '../middleware/upload.js';
+import { areUsersBlocked } from './userController.js';
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
 
@@ -24,6 +25,10 @@ export async function uploadAttachment(req, res) {
     if (!nonce || !HEX_64.test(ephemeralPublicKey || '') || !HEX_64.test(targetPublicKey || '')) {
       fs.unlink(req.file.path, () => {});
       return res.status(400).json({ success: false, error: 'nonce, ephemeralPublicKey and targetPublicKey are required' });
+    }
+    if (await areUsersBlocked(req.user._id, recipientId)) {
+      fs.unlink(req.file.path, () => {});
+      return res.status(403).json({ success: false, error: 'Cannot send attachments to a blocked user' });
     }
 
     const attachment = await Attachment.create({

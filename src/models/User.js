@@ -48,6 +48,14 @@ const userSchema = new mongoose.Schema(
     lastLoginAt: {
       type: Date,
     },
+    // Users this account has blocked. Bidirectional send checks use this
+    // list so neither side can deliver new messages after a block.
+    blockedUsers: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+      },
+    ],
   },
   { timestamps: true }
 );
@@ -75,6 +83,13 @@ userSchema.methods.toPublicJSON = function toPublicJSON() {
     publicKeys: publicKeys.map((k) => String(k).toLowerCase()),
     keyRotatedAt: this.keyRotatedAt,
     lastLoginAt: this.lastLoginAt,
+  };
+};
+
+userSchema.methods.toSelfJSON = function toSelfJSON() {
+  return {
+    ...this.toPublicJSON(),
+    blockedUsers: Array.isArray(this.blockedUsers) ? this.blockedUsers.map((id) => String(id)) : [],
   };
 };
 

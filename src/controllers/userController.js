@@ -1,18 +1,64 @@
 import User, { KEY_SET_SIZE } from '../models/User.js';
+import mongoose from 'mongoose';
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
 
-const PUBLIC_FIELDS = 'username email publicKeys keyRotatedAt lastLoginAt';
+const PUBLIC_FIELDS = 'username email publicKeys keyRotatedAt lastLoginAt blockedUsers';
+
+export async function areUsersBlocked(userAId, userBId) {
+  const [a, b] = await Promise.all([
+    User.findById(userAId).select('blockedUsers'),
+    User.findById(userBId).select('blockedUsers'),
+  ]);
+  if (!a || !b) return true;
+  const aBlocked = (a.blockedUsers || []).some((id) => String(id) === String(userBId));
+  const bBlocked = (b.blockedUsers || []).some((id) => String(id) === String(userAId));
+  return aBlocked || bBlocked;
+}
 
 export async function listUsers(req, res) {
-  const users = await User.find({ _id: { $ne: req.user._id } }).select(PUBLIC_FIELDS);
+  const blockedIds = (req.user.blockedUsers || []).map((id) => id);
+  const users = await User.find({
+    _id: { $nin: [req.user._id, ...blockedIds] },
+  }).select(PUBLIC_FIELDS);
   res.json({ success: true, data: users.map((u) => u.toPublicJSON()) });
 }
 
 export async function getUser(req, res) {
   const user = await User.findById(req.params.id).select(PUBLIC_FIELDS);
   if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+  if (await areUsersBlocked(req.user._id, user._id)) {
+    return res.status(403).json({ success: false, error: 'User is blocked' });
+  }
   res.json({ success: true, data: user.toPublicJSON() });
+}
+
+export async function blockUser(req, res) {
+  const { id } = req.params;
+  if (!mongoose.isValidObjectId(id)) {
+    return res.status(400).json({ success: false, error: 'Invalid user id' });
+  }
+  if (String(id) === String(req.user._id)) {
+    return res.status(400).json({ success: false, error: 'You cannot block yourself' });
+  }
+
+  const target = await User.findById(id).select('_id');
+  if (!target) return res.status(404).json({ success: false, error: 'User not found' });
+
+  await User.updateOne({ _id: req.user._id }, { $addToSet: { blockedUsers: target._id } });
+  const me = await User.findById(req.user._id);
+  res.json({ success: true, data: me.toSelfJSON() });
+}
+
+export async function unblockUser(req, res) {
+  const { id } = req.params;
+  if (!mongoose.isValidObjectId(id)) {
+    return res.status(400).json({ success: false, error: 'Invalid user id' });
+  }
+
+  await User.updateOne({ _id: req.user._id }, { $pull: { blockedUsers: id } });
+  const me = await User.findById(req.user._id);
+  res.json({ success: true, data: me.toSelfJSON() });
 }
 
 // Replaces the whole 5-key pool: used by the periodic 30-minute client-side
@@ -32,5 +78,5 @@ export async function updatePublicKeys(req, res) {
   req.user.publicKeys = publicKeys.map((k) => k.toLowerCase());
   req.user.keyRotatedAt = new Date();
   await req.user.save();
-  res.json({ success: true, data: req.user.toPublicJSON() });
+  res.json({ success: true, data: req.user.toSelfJSON() });
 }

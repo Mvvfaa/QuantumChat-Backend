@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import Message from '../models/Message.js';
+import { areUsersBlocked } from './userController.js';
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
 
@@ -27,6 +28,9 @@ export async function sendMessage(req, res) {
     }
     if (attachmentId && !mongoose.isValidObjectId(attachmentId)) {
       return res.status(400).json({ success: false, error: 'Invalid attachment id' });
+    }
+    if (await areUsersBlocked(req.user._id, to)) {
+      return res.status(403).json({ success: false, error: 'Cannot message a blocked user' });
     }
 
     const message = await Message.create({
