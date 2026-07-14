@@ -70,6 +70,7 @@ export default function Chat() {
   const [hiddenChatIds, setHiddenChatIds] = useState(() => getHiddenChatIds(user?.id));
   const [confirmDialog, setConfirmDialog] = useState(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
+  const [activityTick, setActivityTick] = useState(0);
   const messageListRef = useRef(null);
   const bottomRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -328,12 +329,81 @@ export default function Chat() {
   const canChat = hasLocalKeyring;
   const isGroupChat = selected?.type === 'group';
 
-  function handleSelectUser(u) {
-    const peerId = String(u.id);
-    if (hiddenChatIds.includes(peerId)) {
-      setHiddenChatIds(unhideChat(user.id, peerId));
+  const usernameById = useMemo(() => {
+    const map = new Map();
+    for (const u of users) map.set(String(u.id), u.username);
+    map.set(String(user.id), user.username);
+    for (const g of groups) {
+      for (const m of g.members || []) {
+        const id = memberId(m);
+        if (m.username) map.set(id, m.username);
+      }
     }
-    setSelectedUser(u);
+    return map;
+  }, [users, groups, user]);
+
+  const conversations = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const hidden = new Set(hiddenChatIds);
+    const items = [];
+
+    for (const u of users) {
+      const key = conversationKeyForUser(u.id);
+      const activity = getConversationActivity(user.id, key);
+      const unread = isUnreadConversation(user.id, key, activity?.at, activity?.from);
+      items.push({
+        key,
+        type: 'dm',
+        id: u.id,
+        title: u.username || 'Unknown user',
+        subtitle: null,
+        lastLoginAt: u.lastLoginAt,
+        unread,
+        sortAt: activity?.at || u.lastLoginAt || '',
+        peer: u,
+      });
+    }
+
+    for (const g of groups) {
+      const key = conversationKeyForGroup(g.id);
+      const activity = getConversationActivity(user.id, key);
+      const unread = isUnreadConversation(user.id, key, activity?.at, activity?.from);
+      const memberCount = (g.members || []).length;
+      items.push({
+        key,
+        type: 'group',
+        id: g.id,
+        title: g.name,
+        subtitle: `${memberCount} member${memberCount === 1 ? '' : 's'}`,
+        lastLoginAt: g.updatedAt,
+        unread,
+        sortAt: activity?.at || g.updatedAt || g.createdAt || '',
+        group: g,
+      });
+    }
+
+    items.sort((a, b) => {
+      if (a.unread !== b.unread) return a.unread ? -1 : 1;
+      return String(b.sortAt).localeCompare(String(a.sortAt));
+    });
+
+    return items.filter((c) => {
+      if (c.type === 'dm' && !q && hidden.has(String(c.id))) return false;
+      if (filter === 'groups' && c.type !== 'group') return false;
+      if (filter === 'unread' && !c.unread) return false;
+      if (q && !(c.title || '').toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [users, groups, user.id, search, filter, activityTick, hiddenChatIds]);
+
+  function handleSelectConversation(c) {
+    if (c.type === 'dm' && hiddenChatIds.includes(String(c.id))) {
+      setHiddenChatIds(unhideChat(user.id, c.id));
+    }
+    setSelected(c);
+    setError('');
+    setDraft('');
+    setShowEmojiPicker(false);
     setSidebarOpen(false);
     markConversationRead(user.id, c.key);
     bumpActivity();
@@ -379,8 +449,8 @@ export default function Chat() {
   function handleHideChat(u) {
     const peerId = String(u.id);
     setHiddenChatIds(hideChat(user.id, peerId));
-    if (selectedUser && String(selectedUser.id) === peerId) {
-      setSelectedUser(null);
+    if (selected?.type === 'dm' && String(selected.id) === peerId) {
+      setSelected(null);
       setMessages([]);
     }
   }
@@ -403,8 +473,8 @@ export default function Chat() {
       updateSessionUser(data.data);
       setUsers((prev) => prev.filter((peer) => String(peer.id) !== String(u.id)));
       setHiddenChatIds(hideChat(user.id, u.id));
-      if (selectedUser && String(selectedUser.id) === String(u.id)) {
-        setSelectedUser(null);
+      if (selected?.type === 'dm' && String(selected.id) === String(u.id)) {
+        setSelected(null);
         setMessages([]);
       }
       setError('');
@@ -746,16 +816,27 @@ export default function Chat() {
     }
   }
 
-  const title = useMemo(() => selectedUser?.username || 'Select a conversation', [selectedUser]);
-  const filteredUsers = useMemo(() => {
-    const q = search.toLowerCase().trim();
-    const hidden = new Set(hiddenChatIds);
-    return users.filter((u) => {
-      const name = u?.username?.toLowerCase() || '';
-      if (q) return name.includes(q);
-      return !hidden.has(String(u.id));
-    });
-  }, [users, search, hiddenChatIds]);
+  const title = useMemo(() => {
+    if (!selected) return 'Select a conversation';
+    return selected.title || (selected.type === 'group' ? 'Group' : 'Chat');
+  }, [selected]);
+
+  const headerSubtitle = useMemo(() => {
+    if (!selected) return null;
+    if (selected.type === 'group') {
+      const group = selected.group || groups.find((g) => String(g.id) === String(selected.id));
+      const count = (group?.members || []).length;
+      return count ? `${count} members` : 'Group chat';
+    }
+    const peer = selected.peer || users.find((u) => String(u.id) === String(selected.id));
+    return formatLastSeen(peer?.lastLoginAt);
+  }, [selected, groups, users]);
+
+  const headerOnline = useMemo(() => {
+    if (!selected || selected.type !== 'dm') return false;
+    const peer = selected.peer || users.find((u) => String(u.id) === String(selected.id));
+    return isRecentlyActive(peer?.lastLoginAt);
+  }, [selected, users]);
 
   return (
     <div className="chat-page">
@@ -795,10 +876,13 @@ export default function Chat() {
           </div>
         )}
         {canChat ? (
-          <UserList
-            users={filteredUsers}
-            selectedUserId={selectedUser?.id}
-            onSelect={handleSelectUser}
+          <ConversationList
+            conversations={conversations}
+            filter={filter}
+            onFilterChange={setFilter}
+            selectedKey={selected?.key}
+            onSelect={handleSelectConversation}
+            onCreateGroup={() => setShowCreateGroup(true)}
             onHide={handleHideChat}
             onBlock={handleBlockUser}
             loading={loadingUsers}
@@ -844,9 +928,9 @@ export default function Chat() {
                 </button>
                 <span>{title}</span>
               </div>
-              {selectedUser && (
-                <span className={`last-seen-badge ${isRecentlyActive(selectedUser.lastLoginAt) ? 'status-online' : ''}`}>
-                  {formatLastSeen(selectedUser.lastLoginAt)}
+              {selected && (
+                <span className={`last-seen-badge ${headerOnline ? 'status-online' : ''}`}>
+                  {headerSubtitle}
                 </span>
               )}
             </header>
@@ -1040,6 +1124,14 @@ export default function Chat() {
         onCancel={closeConfirmDialog}
         onConfirm={handleConfirmDialog}
       />
+
+      {showCreateGroup && (
+        <CreateGroupModal
+          users={users}
+          onClose={() => setShowCreateGroup(false)}
+          onCreate={handleCreateGroup}
+        />
+      )}
     </div>
   );
 }

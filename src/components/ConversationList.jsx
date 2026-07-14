@@ -28,6 +28,8 @@ export default function ConversationList({
   selectedKey,
   onSelect,
   onCreateGroup,
+  onHide,
+  onBlock,
   loading,
 }) {
   return (
@@ -74,10 +76,18 @@ export default function ConversationList({
       ) : (
         <div className="user-list">
           {conversations.map((c) => (
-            <button
+            <div
               key={c.key}
               className={`user-list-item ${c.key === selectedKey ? 'active' : ''} ${c.unread ? 'unread' : ''}`}
+              role="button"
+              tabIndex={0}
               onClick={() => onSelect(c)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  onSelect(c);
+                }
+              }}
               aria-label={`${c.type === 'group' ? 'Group' : 'Chat'} ${c.title}${c.unread ? ', unread' : ''}`}
             >
               <span className={`avatar ${c.type === 'group' ? 'group-avatar' : ''}`}>
@@ -102,7 +112,45 @@ export default function ConversationList({
                 </span>
                 <span className="user-list-lastseen">{c.subtitle || formatShortLastSeen(c.lastLoginAt)}</span>
               </span>
-            </button>
+              {c.type === 'dm' && (onHide || onBlock) && (
+                <span className="user-list-actions">
+                  {onHide && (
+                    <button
+                      type="button"
+                      className="user-list-action-btn"
+                      title="Hide chat"
+                      aria-label={`Hide chat with ${c.title}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onHide(c.peer || c);
+                      }}
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <line x1="18" y1="6" x2="6" y2="18" />
+                        <line x1="6" y1="6" x2="18" y2="18" />
+                      </svg>
+                    </button>
+                  )}
+                  {onBlock && (
+                    <button
+                      type="button"
+                      className="user-list-action-btn danger"
+                      title="Block user"
+                      aria-label={`Block ${c.title}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onBlock(c.peer || c);
+                      }}
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <circle cx="12" cy="12" r="10" />
+                        <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
+                      </svg>
+                    </button>
+                  )}
+                </span>
+              )}
+            </div>
           ))}
           {conversations.length === 0 && (
             <p className="empty-hint">
