@@ -1,13 +1,24 @@
+// Simple string hash to pick a consistent gradient class per username
+function hashUsername(name) {
+  let hash = 0;
+  if (!name) return 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = name.charCodeAt(i) + ((hash << 5) - hash);
+    hash |= 0; // force 32-bit int
+  }
+  return Math.abs(hash) % 10;
+}
+
 function isRecentlyActive(iso) {
   if (!iso) return false;
   return Date.now() - new Date(iso).getTime() < 5 * 60 * 1000;
 }
 
 function formatShortLastSeen(iso) {
-  if (!iso) return 'never seen';
-  if (isRecentlyActive(iso)) return 'online';
+  if (!iso) return 'offline';
   const diff = Date.now() - new Date(iso).getTime();
   const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
   if (mins < 60) return `${mins}m ago`;
   const hours = Math.floor(mins / 60);
   if (hours < 24) return `${hours}h ago`;
@@ -15,7 +26,17 @@ function formatShortLastSeen(iso) {
   return `${days}d ago`;
 }
 
-export default function UserList({ users, selectedUserId, onSelect, onHide, onBlock, loading }) {
+export default function UserList({
+  users,
+  selectedUserId,
+  onSelect,
+  onHide,
+  onBlock,
+  loading,
+  onlineUsers = new Set(),
+  unreadCounts = {},
+  lastMessages = {},
+}) {
   if (loading) {
     return (
       <div className="user-list">
@@ -35,7 +56,10 @@ export default function UserList({ users, selectedUserId, onSelect, onHide, onBl
   return (
     <div className="user-list">
       {users.map((u) => {
-        const online = isRecentlyActive(u.lastLoginAt);
+        const online = onlineUsers.has(u.id) || isRecentlyActive(u.lastLoginAt);
+        const unread = unreadCounts[u.id] || 0;
+        const lastMsg = lastMessages[u.id];
+
         return (
           <div
             key={u.id}
@@ -49,18 +73,23 @@ export default function UserList({ users, selectedUserId, onSelect, onHide, onBl
                 onSelect(u);
               }
             }}
-            aria-label={`Chat with ${u.username}, ${online ? 'online' : 'offline'}`}
+            aria-label={`Chat with ${u.username || 'Unknown user'}, ${online ? 'online' : 'offline'}${
+              unread ? `, ${unread} unread` : ''
+            }`}
           >
-            <span className="avatar">
+            <span className={`avatar avatar-gradient-${hashUsername(u.username || '')}`}>
               {(u.username || '?').slice(0, 2).toUpperCase()}
               {online && <span className="online-dot" />}
             </span>
             <span className="user-list-meta">
               <span className="user-list-name">{u.username || 'Unknown user'}</span>
-              <span className={`user-list-lastseen ${online ? 'status-online' : ''}`}>
-                {formatShortLastSeen(u.lastLoginAt)}
-              </span>
+              {lastMsg ? (
+                <span className="user-list-preview">{lastMsg}</span>
+              ) : (
+                <span className="user-list-lastseen">{formatShortLastSeen(u.lastLoginAt)}</span>
+              )}
             </span>
+            {unread > 0 && <span className="unread-badge">{unread > 99 ? '99+' : unread}</span>}
             <span className="user-list-actions">
               <button
                 type="button"

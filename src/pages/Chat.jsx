@@ -11,6 +11,7 @@ import {
   Square,
   Users,
   X,
+  Search,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
 import client from '../api/client.js';
@@ -36,10 +37,16 @@ import SidebarMenu from '../components/SidebarMenu.jsx';
 import SettingsModal from '../components/SettingsModal.jsx';
 import StoriesRail from '../components/StoriesRail.jsx';
 import ConfirmDialog from '../components/ConfirmDialog.jsx';
+import ThemeSwitcher from '../components/ThemeSwitcher.jsx';
+import DateSeparator from '../components/DateSeparator.jsx';
+import MessageSearch from '../components/MessageSearch.jsx';
+import DragDropOverlay from '../components/DragDropOverlay.jsx';
+import { useToast } from '../components/ToastProvider.jsx';
 import { getHiddenChatIds, hideChat, unhideChat } from '../utils/hiddenChats.js';
 
 const MAX_VOICE_SECONDS = 60;
 const ACTIVE_WINDOW_MS = 5 * 60 * 1000;
+const MAX_FILE_SIZE = 15 * 1024 * 1024; // 15 MB
 
 function isRecentlyActive(iso) {
   if (!iso) return false;
@@ -57,12 +64,26 @@ function formatVoiceTimer(seconds) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
+function formatFileSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function memberId(m) {
   return String(m?.id || m?._id || m);
 }
 
+// Check if two ISO dates fall on the same calendar day
+function isSameDay(d1, d2) {
+  const a = new Date(d1);
+  const b = new Date(d2);
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
 export default function Chat() {
   const { user, logout, regenerateKeys, importKeys, hasLocalKeyring, updateSessionUser } = useAuth();
+  const { showToast } = useToast();
 
   const [users, setUsers] = useState([]);
   const [groups, setGroups] = useState([]);
@@ -89,16 +110,25 @@ export default function Chat() {
   const [confirmDialog, setConfirmDialog] = useState(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [activityTick, setActivityTick] = useState(0);
+
+  // Custom UI feature states
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
+
   const messageListRef = useRef(null);
   const bottomRef = useRef(null);
   const fileInputRef = useRef(null);
   const keyFileInputRef = useRef(null);
+  const textareaRef = useRef(null);
   const selectedRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const mediaStreamRef = useRef(null);
   const recordChunksRef = useRef([]);
   const recordTimerRef = useRef(null);
   const recordStartedAtRef = useRef(0);
+  const dragCountRef = useRef(0);
+  const typingTimeoutRef = useRef(null);
   selectedRef.current = selected;
 
   const bumpActivity = useCallback(() => setActivityTick((n) => n + 1), []);
@@ -122,6 +152,15 @@ export default function Chat() {
       setHasUnread(false);
     }
   }, []);
+
+  // Update browser tab unread count prefix
+  useEffect(() => {
+    const totalUnread = conversations.reduce((acc, c) => acc + (c.unread ? 1 : 0), 0);
+    const prefix = totalUnread > 0 ? `(${totalUnread}) ` : '';
+    document.title = selected
+      ? `${prefix}${selected.title} — QuantumChat`
+      : `${prefix}QuantumChat`;
+  }, [selected, activityTick, conversations]);
 
   const resolveMySecretKey = useCallback(
     (targetPublicKeyHex) => findSecretKeyForPublicKey(user.id, targetPublicKeyHex),
@@ -224,12 +263,10 @@ export default function Chat() {
     if (!hasLocalKeyring) return;
     setLoadingUsers(true);
 
-    // Load users and groups independently so a groups API failure
-    // cannot leave the people list empty.
     const usersReq = client
       .get('/users')
       .then((res) => setUsers(res.data.data || []))
-      .catch((err) => setError(err.response?.data?.error || 'Failed to load users'));
+      .catch((err) => showToast(err.response?.data?.error || 'Failed to load users', 'error'));
 
     const groupsReq = client
       .get('/groups')
@@ -243,6 +280,7 @@ export default function Chat() {
     loadDirectory();
   }, [loadDirectory]);
 
+  // Socket routing and listener hooks
   useEffect(() => {
     if (!hasLocalKeyring) return;
     connectSocket();
@@ -261,7 +299,7 @@ export default function Chat() {
 
     function handleIncoming(raw) {
       if (raw.group) {
-        // group messages have no DM peer block list
+        // group messages
       } else {
         const otherId = String(raw.from) === String(user.id) ? raw.to : raw.from;
         const blocked = (user.blockedUsers || []).map(String);
@@ -484,6 +522,7 @@ export default function Chat() {
     setReplyTo(null);
     setEditingMessage(null);
     setShowEmojiPicker(false);
+    setSearchOpen(false);
     setSidebarOpen(false);
     markConversationRead(user.id, c.key);
     bumpActivity();
@@ -560,22 +599,77 @@ export default function Chat() {
       setError('');
       setConfirmDialog(null);
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to block user');
+      showToast(err.response?.data?.error || 'Failed to block user', 'error');
       setConfirmDialog(null);
     } finally {
       setConfirmBusy(false);
     }
   }
 
+  // Keydown to trigger search (Ctrl+K)
+  useEffect(() => {
+    function handleGlobalKeyDown(e) {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        setSearchOpen((prev) => !prev);
+      }
+    }
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, []);
+
+  function handleSearchResult(messageId) {
+    setSearchOpen(false);
+    const el = document.getElementById(`msg-${messageId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.style.animation = 'none';
+      el.offsetHeight; // trigger reflow
+      el.style.animation = 'msgIn 400ms ease both';
+    }
+  }
+
+  // Textarea composition handlers
+  function handleDraftChange(e) {
+    setDraft(e.target.value);
+    if (!selected || selected.type !== 'dm') return;
+    const socket = getSocket();
+    if (!socket) return;
+
+    socket.emit('typing:start', { to: selected.id });
+    clearTimeout(typingTimeoutRef.current);
+    typingTimeoutRef.current = setTimeout(() => {
+      socket.emit('typing:stop', { to: selected.id });
+    }, 2000);
+  }
+
+  function handleTextareaInput(e) {
+    const el = e.target;
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+  }
+
+  function handleTextareaKeyDown(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend(e);
+    }
+  }
+
   async function handleSend(e) {
     e.preventDefault();
     if (!draft.trim() || !selected) return;
+
+    const socket = getSocket();
+    if (socket && selected.type === 'dm') socket.emit('typing:stop', { to: selected.id });
+    clearTimeout(typingTimeoutRef.current);
+
     try {
       if (editingMessage) {
         if (selected.type === 'group') {
           const group = selected.group || groups.find((g) => String(g.id) === String(selected.id));
           if (!group) {
-            setError('Group not found');
+            showToast('Group not found', 'error');
             return;
           }
           const envelopes = sealGroupEnvelopes(draft, group);
@@ -590,7 +684,7 @@ export default function Chat() {
           const myKey = pickRandom(getCurrentKeySet(user.id));
           const recipientKeys = (peer?.publicKeys || []).filter(Boolean);
           if (!myKey?.publicKey || recipientKeys.length === 0) {
-            setError('Missing encryption keys for this conversation');
+            showToast('Missing encryption keys for this conversation', 'error');
             return;
           }
           const forRecipient = sealMessage(draft, pickRandom(recipientKeys));
@@ -608,13 +702,14 @@ export default function Chat() {
         setEditingMessage(null);
         setDraft('');
         setReplyTo(null);
+        if (textareaRef.current) textareaRef.current.style.height = 'auto';
         return;
       }
 
       if (selected.type === 'group') {
         const group = selected.group || groups.find((g) => String(g.id) === String(selected.id));
         if (!group) {
-          setError('Group not found');
+          showToast('Group not found', 'error');
           return;
         }
         const envelopes = sealGroupEnvelopes(draft, group);
@@ -632,7 +727,7 @@ export default function Chat() {
         const myKey = pickRandom(getCurrentKeySet(user.id));
         const recipientKeys = (peer?.publicKeys || []).filter(Boolean);
         if (!myKey?.publicKey || recipientKeys.length === 0) {
-          setError('Missing encryption keys for this conversation');
+          showToast('Missing encryption keys for this conversation', 'error');
           return;
         }
         const forRecipient = sealMessage(draft, pickRandom(recipientKeys));
@@ -652,19 +747,26 @@ export default function Chat() {
       playSendSound();
       markConversationRead(user.id, selected.key);
       bumpActivity();
+      if (textareaRef.current) textareaRef.current.style.height = 'auto';
       setTimeout(() => scrollToBottom('smooth'), 50);
     } catch (err) {
-      setError(err.response?.data?.error || err.message || 'Failed to send message');
+      showToast(err.response?.data?.error || err.message || 'Failed to send message', 'error');
     }
   }
 
   async function sendAttachmentFile(file, { plainBytes } = {}) {
     if (!file || !selected || selected.type !== 'dm') return;
+
+    if (file.size > MAX_FILE_SIZE) {
+      showToast(`File too large (${formatFileSize(file.size)}). Maximum size is ${formatFileSize(MAX_FILE_SIZE)}.`, 'error');
+      return;
+    }
+
     const peer = selected.peer || users.find((u) => String(u.id) === String(selected.id));
     const myKey = pickRandom(getCurrentKeySet(user.id));
     const recipientKeys = (peer?.publicKeys || []).filter(Boolean);
     if (!myKey?.publicKey || recipientKeys.length === 0) {
-      setError('Missing encryption keys for this conversation');
+      showToast('Missing encryption keys for this conversation', 'error');
       return;
     }
     const recipientPublicKey = pickRandom(recipientKeys);
@@ -708,6 +810,7 @@ export default function Chat() {
       return [...prev, decorate(data.data)];
     });
     playSendSound();
+    showToast('File sent successfully', 'success', 3000);
     setTimeout(() => scrollToBottom('smooth'), 50);
   }
 
@@ -718,7 +821,36 @@ export default function Chat() {
     try {
       await sendAttachmentFile(file);
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to send attachment');
+      showToast(err.response?.data?.error || 'Failed to send attachment', 'error');
+    }
+  }
+
+  // Drag and drop events
+  function handleDragEnter(e) {
+    e.preventDefault();
+    dragCountRef.current += 1;
+    if (dragCountRef.current === 1) setIsDragging(true);
+  }
+
+  function handleDragLeave(e) {
+    e.preventDefault();
+    dragCountRef.current -= 1;
+    if (dragCountRef.current === 0) setIsDragging(false);
+  }
+
+  function handleDragOver(e) {
+    e.preventDefault();
+  }
+
+  function handleDrop(e) {
+    e.preventDefault();
+    dragCountRef.current = 0;
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      sendAttachmentFile(file).catch((err) => {
+        showToast(err.message || 'File drop failed', 'error');
+      });
     }
   }
 
@@ -740,11 +872,10 @@ export default function Chat() {
   async function startVoiceRecording() {
     if (!selected || selected.type !== 'dm' || recording || sendingVoice) return;
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
-      setError('Voice notes are not supported in this browser');
+      showToast('Voice notes are not supported in this browser', 'error');
       return;
     }
     try {
-      setError('');
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
@@ -764,7 +895,7 @@ export default function Chat() {
 
       recorder.onerror = () => {
         clearRecordingResources();
-        setError('Voice recording failed');
+        showToast('Voice recording failed', 'error');
       };
 
       recorder.onstop = async () => {
@@ -772,13 +903,13 @@ export default function Chat() {
         const type = (recorder.mimeType || mimeType || 'audio/webm').split(';')[0];
         clearRecordingResources();
         if (!chunks.length) {
-          setError('No audio captured — try again');
+          showToast('No audio captured — try again', 'error');
           return;
         }
 
         const blob = new Blob(chunks, { type: type || 'audio/webm' });
         if (blob.size < 256) {
-          setError('Recording too short — hold a bit longer');
+          showToast('Recording too short — hold a bit longer', 'error');
           return;
         }
 
@@ -790,7 +921,7 @@ export default function Chat() {
         try {
           await sendAttachmentFile(file, { plainBytes });
         } catch (err) {
-          setError(err.response?.data?.error || 'Failed to send voice note');
+          showToast(err.response?.data?.error || 'Failed to send voice note', 'error');
         } finally {
           setSendingVoice(false);
         }
@@ -808,7 +939,7 @@ export default function Chat() {
       }, 200);
     } catch {
       clearRecordingResources();
-      setError('Microphone permission is required for voice notes');
+      showToast('Microphone permission is required for voice notes', 'error');
     }
   }
 
@@ -821,7 +952,7 @@ export default function Chat() {
     try {
       if (recorder.state === 'recording') recorder.requestData();
     } catch {
-      // some browsers throw if requestData isn't supported mid-stream
+      // ignore
     }
     recorder.stop();
   }
@@ -867,7 +998,7 @@ export default function Chat() {
       setMessages((prev) => prev.filter((m) => String(m.id || m._id) !== String(messageId)));
       setConfirmDialog(null);
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to delete message');
+      showToast(err.response?.data?.error || 'Failed to delete message', 'error');
       setConfirmDialog(null);
     } finally {
       setConfirmBusy(false);
@@ -917,7 +1048,7 @@ export default function Chat() {
         recipientKeys = (peer?.publicKeys || []).filter(Boolean);
       }
       if (!myKey?.publicKey || recipientKeys.length === 0) {
-        setError('Missing encryption keys for this conversation');
+        showToast('Missing encryption keys for this conversation', 'error');
         return;
       }
       const forRecipient = sealMessage(emoji, pickRandom(recipientKeys));
@@ -927,13 +1058,14 @@ export default function Chat() {
         prev.map((m) => (String(m.id || m._id) === String(messageId) ? decorate(data.data) : m))
       );
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to add reaction');
+      showToast(err.response?.data?.error || 'Failed to add reaction', 'error');
     }
   }
 
   function insertEmoji(emoji) {
     setDraft((prev) => `${prev}${emoji}`);
     setShowEmojiPicker(false);
+    textareaRef.current?.focus();
   }
 
   async function handleGenerateKeys() {
@@ -945,9 +1077,11 @@ export default function Chat() {
         secretKeys: keySet.map((k) => k.secretKey),
       });
       downloadKeyFile(content);
+      showToast('New keys generated and synchronized successfully', 'success');
       setError('');
     } catch (err) {
       setError(err.response?.data?.error || err.message || 'Failed to generate keys');
+      showToast('Failed to generate keys', 'error');
     }
   }
 
@@ -960,9 +1094,20 @@ export default function Chat() {
       const secretKeys = parseKeyFile(text);
       importKeys(secretKeys);
       setImportError('');
+      showToast('Encryption key file imported successfully', 'success');
     } catch (err) {
       setImportError(err.message || 'Failed to import keys.txt');
+      showToast(err.message || 'Key import failed', 'error');
     }
+  }
+
+  function handleLogout() {
+    setLogoutConfirmOpen(true);
+  }
+
+  function confirmLogout() {
+    setLogoutConfirmOpen(false);
+    logout();
   }
 
   const title = useMemo(() => {
@@ -987,6 +1132,31 @@ export default function Chat() {
     return isRecentlyActive(peer?.lastLoginAt);
   }, [selected, users]);
 
+  // Build message list with date separators
+  const messagesWithSeparators = useMemo(() => {
+    const items = [];
+    messages.forEach((m, i) => {
+      const prev = messages[i - 1];
+      if (!prev || !isSameDay(prev.createdAt, m.createdAt)) {
+        items.push({ type: 'separator', date: m.createdAt, key: `sep-${m.createdAt}` });
+      }
+      items.push({ type: 'message', data: m, key: m.id || m._id });
+    });
+    return items;
+  }, [messages]);
+
+  // Floating chat bubbles for empty state
+  const floatingBubbles = useMemo(() => {
+    const sizes = [28, 22, 32, 18, 26];
+    return sizes.map((size, i) => (
+      <div key={i} className="chat-empty-floater">
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+        </svg>
+      </div>
+    ));
+  }, []);
+
   return (
     <div className="chat-page">
       <div
@@ -1007,8 +1177,9 @@ export default function Chat() {
               <div className="sidebar-lastseen sidebar-status-online">online</div>
             </div>
           </div>
-          <div className="sidebar-header-actions">
-            <SidebarMenu onSettings={() => setShowSettings(true)} onLogout={logout} />
+          <div className="sidebar-header-actions" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <ThemeSwitcher />
+            <SidebarMenu onSettings={() => setShowSettings(true)} onLogout={handleLogout} />
           </div>
         </div>
         {canChat && (
@@ -1042,7 +1213,13 @@ export default function Chat() {
         )}
       </aside>
 
-      <main className="chat-main">
+      <main
+        className="chat-main"
+        onDragEnter={canChat && selected && selected.type === 'dm' ? handleDragEnter : undefined}
+        onDragLeave={canChat && selected && selected.type === 'dm' ? handleDragLeave : undefined}
+        onDragOver={canChat && selected && selected.type === 'dm' ? handleDragOver : undefined}
+        onDrop={canChat && selected && selected.type === 'dm' ? handleDrop : undefined}
+      >
         {!canChat && (
           <div className="key-warning">
             <p>
@@ -1097,10 +1274,32 @@ export default function Chat() {
                   <span className="chat-header-title muted">{title}</span>
                 )}
               </div>
+              <div className="chat-header-actions">
+                {selected && (
+                  <button
+                    className="chat-header-btn"
+                    onClick={() => setSearchOpen(!searchOpen)}
+                    title="Search messages (Ctrl+K)"
+                    aria-label="Search messages"
+                  >
+                    <Search size={18} strokeWidth={2} aria-hidden="true" />
+                  </button>
+                )}
+              </div>
             </header>
+
+            {searchOpen && selected && (
+              <MessageSearch
+                messages={messages}
+                onResultSelect={handleSearchResult}
+                isOpen={searchOpen}
+                onClose={() => setSearchOpen(false)}
+              />
+            )}
 
             {!selected ? (
               <div className="chat-empty-state">
+                {floatingBubbles}
                 <div className="chat-empty-icon">
                   <MessageSquare size={30} strokeWidth={1.5} aria-hidden="true" />
                 </div>
@@ -1109,6 +1308,10 @@ export default function Chat() {
               </div>
             ) : (
               <>
+                {isDragging && (
+                  <DragDropOverlay isVisible={true} onFileDrop={sendAttachmentFile} />
+                )}
+
                 <AnimatePresence mode="wait">
                   <motion.div
                     key={selected.key}
@@ -1120,56 +1323,65 @@ export default function Chat() {
                     exit={{ opacity: 0, x: -12 }}
                     transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
                   >
-                  {loadingMessages ? (
-                    <>
-                      <div className="skeleton-message-bubble theirs skeleton" />
-                      <div className="skeleton-message-bubble mine skeleton" />
-                      <div className="skeleton-message-bubble theirs skeleton" style={{ width: '45%' }} />
-                      <div className="skeleton-message-bubble mine skeleton" style={{ width: '35%' }} />
-                    </>
-                  ) : (
-                    messages.map((m, index) => {
-                      const prev = messages[index - 1];
-                      const isGrouped =
-                        prev &&
-                        String(prev.from) === String(m.from) &&
-                        new Date(m.createdAt) - new Date(prev.createdAt) < 120000;
+                    {loadingMessages ? (
+                      <>
+                        <div className="skeleton-message-bubble theirs skeleton" />
+                        <div className="skeleton-message-bubble mine skeleton" />
+                        <div className="skeleton-message-bubble theirs skeleton" style={{ width: '45%' }} />
+                        <div className="skeleton-message-bubble mine skeleton" style={{ width: '35%' }} />
+                      </>
+                    ) : (
+                      messagesWithSeparators.map((item, index) => {
+                        if (item.type === 'separator') {
+                          return <DateSeparator key={item.key} date={item.date} />;
+                        }
 
-                      return (
-                        <MessageBubble
-                          key={m.id || m._id}
-                          message={m}
-                          isMine={String(m.from) === String(user.id)}
-                          currentUserId={user.id}
-                          resolveSecretKey={resolveMySecretKey}
-                          grouped={isGrouped}
-                          senderLabel={
-                            isGroupChat ? usernameById.get(String(m.from)) || 'Member' : undefined
-                          }
-                          replyPreview={
-                            m.replyTo
-                              ? {
-                                  label: usernameById.get(String(m.replyTo.from)) || 'Message',
-                                  text: m.replyTo.text || '[encrypted]',
-                                }
-                              : null
-                          }
-                          onDelete={handleDeleteMessage}
-                          onReact={handleReactMessage}
-                          onReply={(msg) => {
-                            setEditingMessage(null);
-                            setReplyTo(msg);
-                          }}
-                          onEdit={(msg) => {
-                            setReplyTo(null);
-                            setEditingMessage(msg);
-                            setDraft(msg.text || '');
-                          }}
-                        />
-                      );
-                    })
-                  )}
-                  <div ref={bottomRef} />
+                        const m = item.data;
+                        const prevMsg = index > 0 && messagesWithSeparators[index - 1].type === 'message'
+                          ? messagesWithSeparators[index - 1].data
+                          : null;
+                        const isGrouped =
+                          prevMsg &&
+                          String(prevMsg.from) === String(m.from) &&
+                          new Date(m.createdAt) - new Date(prevMsg.createdAt) < 120000;
+
+                        return (
+                          <div key={item.key} id={`msg-${m.id || m._id}`}>
+                            <MessageBubble
+                              key={m.id || m._id}
+                              message={m}
+                              isMine={String(m.from) === String(user.id)}
+                              currentUserId={user.id}
+                              resolveSecretKey={resolveMySecretKey}
+                              grouped={isGrouped}
+                              senderLabel={
+                                isGroupChat ? usernameById.get(String(m.from)) || 'Member' : undefined
+                              }
+                              replyPreview={
+                                m.replyTo
+                                  ? {
+                                      label: usernameById.get(String(m.replyTo.from)) || 'Message',
+                                      text: m.replyTo.text || '[encrypted]',
+                                    }
+                                  : null
+                              }
+                              onDelete={handleDeleteMessage}
+                              onReact={handleReactMessage}
+                              onReply={(msg) => {
+                                setEditingMessage(null);
+                                setReplyTo(msg);
+                              }}
+                              onEdit={(msg) => {
+                                setReplyTo(null);
+                                setEditingMessage(msg);
+                                setDraft(msg.text || '');
+                              }}
+                            />
+                          </div>
+                        );
+                      })
+                    )}
+                    <div ref={bottomRef} />
                   </motion.div>
                 </AnimatePresence>
 
@@ -1183,8 +1395,6 @@ export default function Chat() {
                     <ArrowDown size={16} strokeWidth={2.5} aria-hidden="true" />
                   </button>
                 )}
-
-                {error && <div className="auth-error">{error}</div>}
 
                 {recording ? (
                   <div className="composer composer-recording">
@@ -1239,6 +1449,12 @@ export default function Chat() {
                         </button>
                       </div>
                     )}
+                    <div className="composer-hint">
+                      <span><kbd>Enter</kbd> send</span>
+                      <span><kbd>Shift</kbd>+<kbd>Enter</kbd> new line</span>
+                      <span><kbd>Ctrl</kbd>+<kbd>K</kbd> search</span>
+                      <span style={{ marginLeft: 'auto', opacity: 0.6 }}>Max file: 15 MB</span>
+                    </div>
                     <form className="composer" onSubmit={handleSend}>
                       {!isGroupChat && (
                         <button
@@ -1261,7 +1477,8 @@ export default function Chat() {
                         <Smile size={20} strokeWidth={2} aria-hidden="true" />
                       </button>
                       <input ref={fileInputRef} type="file" hidden onChange={handleFileChange} />
-                      <input
+                      <textarea
+                        ref={textareaRef}
                         placeholder={
                           sendingVoice
                             ? 'Sending voice note…'
@@ -1270,9 +1487,12 @@ export default function Chat() {
                               : 'Type an encrypted message…'
                         }
                         value={draft}
-                        onChange={(e) => setDraft(e.target.value)}
+                        onChange={handleDraftChange}
+                        onInput={handleTextareaInput}
+                        onKeyDown={handleTextareaKeyDown}
                         aria-label="Type message body"
                         disabled={sendingVoice}
+                        rows={1}
                       />
                       {draft.trim() ? (
                         <button type="submit" className="send-button" aria-label="Send encrypted message" disabled={sendingVoice}>
@@ -1328,6 +1548,19 @@ export default function Chat() {
           onImportKeys={handleImportKeyFile}
           onGenerateKeys={handleGenerateKeys}
           onUserUpdated={updateSessionUser}
+        />
+      )}
+
+      {logoutConfirmOpen && (
+        <ConfirmDialog
+          open={logoutConfirmOpen}
+          title="Log out of QuantumChat?"
+          message="Your encryption keys are stored in this browser's local storage. If you clear your browser data after logging out, you won't be able to decrypt your message history."
+          confirmLabel="Log out"
+          cancelLabel="Stay"
+          danger={true}
+          onConfirm={confirmLogout}
+          onCancel={() => setLogoutConfirmOpen(false)}
         />
       )}
     </div>

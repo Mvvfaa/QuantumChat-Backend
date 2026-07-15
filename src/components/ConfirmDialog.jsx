@@ -2,19 +2,23 @@ import { useEffect, useRef } from 'react';
 
 export default function ConfirmDialog({
   open,
+  isOpen,
   title,
   message,
   confirmLabel = 'Confirm',
   cancelLabel = 'Cancel',
   danger = false,
+  variant = 'default',
   busy = false,
   onConfirm,
   onCancel,
 }) {
   const cancelRef = useRef(null);
+  const isCurrentlyOpen = open || isOpen;
+  const isDanger = danger || variant === 'danger';
 
   useEffect(() => {
-    if (!open) return undefined;
+    if (!isCurrentlyOpen) return undefined;
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     cancelRef.current?.focus();
@@ -27,9 +31,9 @@ export default function ConfirmDialog({
       document.body.style.overflow = prev;
       window.removeEventListener('keydown', onKeyDown);
     };
-  }, [open, busy, onCancel]);
+  }, [isCurrentlyOpen, busy, onCancel]);
 
-  if (!open) return null;
+  if (!isCurrentlyOpen) return null;
 
   return (
     <div className="confirm-overlay" role="presentation" onClick={() => !busy && onCancel?.()}>
@@ -41,8 +45,8 @@ export default function ConfirmDialog({
         aria-describedby="confirm-dialog-message"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className={`confirm-dialog-icon ${danger ? 'danger' : ''}`}>
-          {danger ? (
+        <div className={`confirm-dialog-icon ${isDanger ? 'danger' : ''}`}>
+          {isDanger ? (
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <circle cx="12" cy="12" r="10" />
               <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
@@ -55,17 +59,17 @@ export default function ConfirmDialog({
             </svg>
           )}
         </div>
-        <h2 id="confirm-dialog-title" className="confirm-dialog-title">
+        <h2 id="confirm-dialog-title" className="confirm-dialog-title confirm-title">
           {title}
         </h2>
-        <p id="confirm-dialog-message" className="confirm-dialog-message">
+        <p id="confirm-dialog-message" className="confirm-dialog-message confirm-message">
           {message}
         </p>
-        <div className="confirm-dialog-actions">
+        <div className="confirm-dialog-actions confirm-actions">
           <button
             ref={cancelRef}
             type="button"
-            className="confirm-btn cancel"
+            className="confirm-btn-cancel confirm-btn cancel"
             onClick={onCancel}
             disabled={busy}
           >
@@ -73,7 +77,7 @@ export default function ConfirmDialog({
           </button>
           <button
             type="button"
-            className={`confirm-btn ${danger ? 'danger' : 'primary'}`}
+            className={`confirm-btn ${isDanger ? 'confirm-btn-danger danger' : 'confirm-btn-confirm primary'}`}
             onClick={onConfirm}
             disabled={busy}
           >

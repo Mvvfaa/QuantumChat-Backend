@@ -1,8 +1,9 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion } from 'framer-motion';
 import { MoreHorizontal, Pencil, Reply, Smile, Trash2 } from 'lucide-react';
 import AttachmentBubble from './AttachmentBubble.jsx';
+import ImageLightbox from './ImageLightbox.jsx';
 import { QUICK_REACTIONS } from '../utils/emojis.js';
 
 const MENU_GAP = 8;
@@ -46,11 +47,47 @@ function placePopover(anchorRect, popoverEl, { preferMine }) {
   return { top, left, placement };
 }
 
+// Relative timestamp formatting
+function formatRelativeTime(iso) {
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+// Read receipt checkmark SVGs
+function ReadReceipt({ status }) {
+  if (!status) return null;
+
+  if (status === 'sent') {
+    return (
+      <span className="read-receipt sent" title="Sent">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="20 6 9 17 4 12" />
+        </svg>
+      </span>
+    );
+  }
+
+  return (
+    <span className={`read-receipt ${status}`} title={status === 'read' ? 'Read' : 'Delivered'}>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="18 6 7 17 2 12" />
+        <polyline points="24 6 13 17 10 14" />
+      </svg>
+    </span>
+  );
+}
+
 export default function MessageBubble({
   message,
   isMine,
   currentUserId,
   resolveSecretKey,
+  resolveAttachmentKey,
   grouped,
   senderLabel,
   replyPreview,
@@ -62,6 +99,8 @@ export default function MessageBubble({
   const [menuOpen, setMenuOpen] = useState(false);
   const [reactOpen, setReactOpen] = useState(false);
   const [coords, setCoords] = useState({ top: 0, left: 0, placement: 'below', ready: false });
+  const [lightboxSrc, setLightboxSrc] = useState(null);
+
   const rootRef = useRef(null);
   const moreRef = useRef(null);
   const reactBtnRef = useRef(null);
@@ -71,6 +110,22 @@ export default function MessageBubble({
   const reactionGroups = groupReactions(message.reactions);
   const myReaction = (message.reactions || []).find((r) => String(r.user) === String(currentUserId))?.emoji;
   const anyPopover = menuOpen || reactOpen;
+
+  const keyResolver = resolveSecretKey || resolveAttachmentKey;
+
+  // Determine read receipt status for own messages
+  const receiptStatus = useMemo(() => {
+    if (!isMine) return null;
+    if (message.readAt) return 'read';
+    if (message.deliveredAt) return 'delivered';
+    return 'sent';
+  }, [isMine, message.readAt, message.deliveredAt]);
+
+  const relativeTime = useMemo(() => formatRelativeTime(message.createdAt), [message.createdAt]);
+  const fullTime = useMemo(() => new Date(message.createdAt).toLocaleString(), [message.createdAt]);
+
+  const hasTextContent = message.text && message.text.length > 0;
+  const isDecryptionFail = message.text === null;
 
   function closeAll() {
     setMenuOpen(false);
@@ -208,88 +263,100 @@ export default function MessageBubble({
     );
 
   return (
-    <motion.div
-      ref={rootRef}
-      className={`message-row ${isMine ? 'mine' : 'theirs'} ${grouped ? 'grouped' : ''} ${anyPopover ? 'popover-open' : ''}`}
-      initial={grouped ? false : { opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-    >
-      <div className={`message-bubble-wrap ${isMine ? 'mine' : 'theirs'}`}>
-        <div className={`message-bubble ${isMine ? 'mine' : 'theirs'} ${grouped ? 'grouped' : ''}`}>
-          {senderLabel && !isMine && !grouped && <div className="message-sender-label">{senderLabel}</div>}
-          {replyPreview && (
-            <div className="message-reply-preview">
-              <span className="message-reply-label">{replyPreview.label}</span>
-              <span className="message-reply-text">{replyPreview.text}</span>
+    <>
+      <motion.div
+        ref={rootRef}
+        className={`message-row ${isMine ? 'mine' : 'theirs'} ${grouped ? 'grouped' : ''} ${anyPopover ? 'popover-open' : ''}`}
+        initial={grouped ? false : { opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+      >
+        <div className={`message-bubble-wrap ${isMine ? 'mine' : 'theirs'}`}>
+          <div className={`message-bubble ${isMine ? 'mine' : 'theirs'} ${grouped ? 'grouped' : ''}`}>
+            {senderLabel && !isMine && !grouped && <div className="message-sender-label">{senderLabel}</div>}
+            {replyPreview && (
+              <div className="message-reply-preview">
+                <span className="message-reply-label">{replyPreview.label}</span>
+                <span className="message-reply-text">{replyPreview.text}</span>
+              </div>
+            )}
+            {message.attachment && (
+              <AttachmentBubble
+                attachment={message.attachment}
+                isMine={isMine}
+                resolveSecretKey={keyResolver}
+                onImagePreview={setLightboxSrc}
+              />
+            )}
+            {hasTextContent ? message.text : isDecryptionFail ? <em>[Unable to decrypt message]</em> : null}
+            <div className="message-time" title={fullTime}>
+              {relativeTime}
+              {message.editedAt ? <span className="message-edited"> · edited</span> : null}
+              {isMine && <ReadReceipt status={receiptStatus} />}
             </div>
-          )}
-          {message.attachment && (
-            <AttachmentBubble
-              attachment={message.attachment}
-              isMine={isMine}
-              resolveSecretKey={resolveSecretKey}
-            />
-          )}
-          {message.text ? message.text : message.text === null ? <em>[Unable to decrypt message]</em> : null}
-          <div className="message-time">
-            {new Date(message.createdAt).toLocaleTimeString()}
-            {message.editedAt ? <span className="message-edited"> · edited</span> : null}
+          </div>
+
+          <div className="message-action-cluster">
+            {onReact && (
+              <button
+                ref={reactBtnRef}
+                type="button"
+                className={`message-react-btn ${reactOpen || myReaction ? 'visible' : ''}`}
+                aria-label="Add reaction"
+                onClick={() => {
+                  anchorRef.current = reactBtnRef.current;
+                  setReactOpen((v) => !v);
+                  setMenuOpen(false);
+                }}
+              >
+                <Smile size={16} strokeWidth={2} aria-hidden="true" />
+              </button>
+            )}
+            <button
+              ref={moreRef}
+              type="button"
+              className={`message-more-btn ${anyPopover ? 'visible' : ''}`}
+              aria-label="Message options"
+              aria-expanded={anyPopover}
+              onClick={() => {
+                anchorRef.current = moreRef.current;
+                setMenuOpen((v) => !v);
+                setReactOpen(false);
+              }}
+            >
+              <MoreHorizontal size={16} strokeWidth={2} aria-hidden="true" />
+            </button>
           </div>
         </div>
 
-        <div className="message-action-cluster">
-          {onReact && (
-            <button
-              ref={reactBtnRef}
-              type="button"
-              className={`message-react-btn ${reactOpen ? 'visible' : ''}`}
-              aria-label="Add reaction"
-              onClick={() => {
-                anchorRef.current = reactBtnRef.current;
-                setReactOpen((v) => !v);
-                setMenuOpen(false);
-              }}
-            >
-              <Smile size={16} strokeWidth={2} aria-hidden="true" />
-            </button>
-          )}
-          <button
-            ref={moreRef}
-            type="button"
-            className={`message-more-btn ${anyPopover ? 'visible' : ''}`}
-            aria-label="Message options"
-            aria-expanded={anyPopover}
-            onClick={() => {
-              anchorRef.current = moreRef.current;
-              setMenuOpen((v) => !v);
-              setReactOpen(false);
-            }}
-          >
-            <MoreHorizontal size={16} strokeWidth={2} aria-hidden="true" />
-          </button>
-        </div>
-      </div>
+        {popover}
 
-      {popover}
-
-      {reactionGroups.length > 0 && (
-        <div className={`message-reactions ${isMine ? 'mine' : 'theirs'}`}>
-          {reactionGroups.map((g) => (
-            <button
-              key={g.emoji}
-              type="button"
-              className={`reaction-chip ${g.users.includes(String(currentUserId)) ? 'mine' : ''}`}
-              onClick={() => onReact?.(messageId, g.emoji)}
-              aria-label={`React with ${g.emoji}`}
-              disabled={!onReact}
-            >
-              <span>{g.emoji}</span>
-              {g.count > 1 && <span className="reaction-count">{g.count}</span>}
-            </button>
-          ))}
-        </div>
+        {reactionGroups.length > 0 && (
+          <div className={`message-reactions ${isMine ? 'mine' : 'theirs'}`}>
+            {reactionGroups.map((g) => (
+              <button
+                key={g.emoji}
+                type="button"
+                className={`reaction-chip ${g.users.includes(String(currentUserId)) ? 'mine' : ''}`}
+                onClick={() => onReact?.(messageId, g.emoji)}
+                aria-label={`React with ${g.emoji}`}
+                disabled={!onReact}
+              >
+                <span>{g.emoji}</span>
+                {g.count > 1 && <span className="reaction-count">{g.count}</span>}
+              </button>
+            ))}
+          </div>
+        )}
+      </motion.div>
+      {lightboxSrc && (
+        <ImageLightbox
+          src={lightboxSrc}
+          alt={message.attachment?.filename || 'Image preview'}
+          isOpen={true}
+          onClose={() => setLightboxSrc(null)}
+        />
       )}
-    </motion.div>
+    </>
   );
 }

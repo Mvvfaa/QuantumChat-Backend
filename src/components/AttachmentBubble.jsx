@@ -35,6 +35,13 @@ function formatDuration(seconds) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
+function formatFileSize(bytes) {
+  if (!bytes) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function VoicePlayer({ url }) {
   const audioRef = useRef(null);
   const [playing, setPlaying] = useState(false);
@@ -104,14 +111,21 @@ function VoicePlayer({ url }) {
   );
 }
 
-export default function AttachmentBubble({ attachment: rawAttachment, isMine, resolveSecretKey }) {
+export default function AttachmentBubble({
+  attachment: rawAttachment,
+  isMine,
+  resolveSecretKey,
+  resolveAttachmentKey,
+  onImagePreview,
+}) {
   const attachment = normalizeAttachment(rawAttachment);
   const [status, setStatus] = useState('idle');
   const [preview, setPreview] = useState(null);
   const [audioUrl, setAudioUrl] = useState(null);
   const audio = isAudioAttachment(attachment);
   const attachmentId = attachmentIdOf(attachment);
-  const opened = pickAttachmentEnvelope(attachment, resolveSecretKey);
+  const keyResolver = resolveSecretKey || resolveAttachmentKey;
+  const opened = pickAttachmentEnvelope(attachment, keyResolver);
 
   useEffect(() => {
     let revoked = null;
@@ -167,7 +181,11 @@ export default function AttachmentBubble({ attachment: rawAttachment, isMine, re
           <span>Voice note</span>
         </span>
         <span className="attachment-note">
-          {status === 'loading' ? 'Decrypting…' : isMine ? "can't decrypt on this device" : "can't decrypt on this device"}
+          {status === 'loading'
+            ? 'Decrypting…'
+            : isMine
+              ? "only the recipient can open this"
+              : "can't decrypt on this device"}
         </span>
       </div>
     );
@@ -180,7 +198,9 @@ export default function AttachmentBubble({ attachment: rawAttachment, isMine, re
           <FileIcon className="file-icon" />
           <span>{attachment.filename}</span>
         </span>
-        <span className="attachment-note">can't decrypt on this device</span>
+        <span className="attachment-note">
+          {isMine ? 'only the recipient can open this' : "can't decrypt on this device"}
+        </span>
       </div>
     );
   }
@@ -219,7 +239,16 @@ export default function AttachmentBubble({ attachment: rawAttachment, isMine, re
   }
 
   if (preview) {
-    return <img className="attachment-preview" src={preview} alt={attachment.filename} />;
+    return (
+      <img
+        className="attachment-preview"
+        src={preview}
+        alt={attachment.filename}
+        onClick={() => onImagePreview && onImagePreview(preview)}
+        role="button"
+        aria-label="Open image in full screen"
+      />
+    );
   }
 
   if (status === 'loading' && (audio || attachment.mimetype?.startsWith('image/'))) {
@@ -240,6 +269,7 @@ export default function AttachmentBubble({ attachment: rawAttachment, isMine, re
       <span className="attachment-filename">
         {audio ? <MicIcon className="file-icon" /> : <FileIcon className="file-icon" />}
         <span>{audio ? 'Voice note' : attachment.filename}</span>
+        {attachment.size && <span className="attachment-note">({formatFileSize(attachment.size)})</span>}
       </span>
       <button type="button" onClick={handleFetch} disabled={status === 'loading'}>
         {status === 'loading' ? 'Decrypting…' : status === 'error' ? 'Failed — retry' : audio ? 'Play' : 'Open'}
