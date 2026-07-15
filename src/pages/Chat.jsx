@@ -153,15 +153,6 @@ export default function Chat() {
     }
   }, []);
 
-  // Update browser tab unread count prefix
-  useEffect(() => {
-    const totalUnread = conversations.reduce((acc, c) => acc + (c.unread ? 1 : 0), 0);
-    const prefix = totalUnread > 0 ? `(${totalUnread}) ` : '';
-    document.title = selected
-      ? `${prefix}${selected.title} — QuantumChat`
-      : `${prefix}QuantumChat`;
-  }, [selected, activityTick, conversations]);
-
   const resolveMySecretKey = useCallback(
     (targetPublicKeyHex) => findSecretKeyForPublicKey(user.id, targetPublicKeyHex),
     [user]
@@ -511,6 +502,15 @@ export default function Chat() {
       return true;
     });
   }, [users, groups, user.id, search, filter, activityTick, hiddenChatIds]);
+
+  // Update browser tab unread count prefix (must run after conversations is defined)
+  useEffect(() => {
+    const totalUnread = conversations.reduce((acc, c) => acc + (c.unread ? 1 : 0), 0);
+    const prefix = totalUnread > 0 ? `(${totalUnread}) ` : '';
+    document.title = selected
+      ? `${prefix}${selected.title} — QuantumChat`
+      : `${prefix}QuantumChat`;
+  }, [selected, activityTick, conversations]);
 
   function handleSelectConversation(c) {
     if (c.type === 'dm' && hiddenChatIds.includes(String(c.id))) {
