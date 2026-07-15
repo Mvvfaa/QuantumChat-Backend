@@ -1,7 +1,17 @@
 import { useEffect, useLayoutEffect, useRef, useState, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion } from 'framer-motion';
-import { MoreHorizontal, Pencil, Reply, Smile, Trash2 } from 'lucide-react';
+import {
+  Copy,
+  Forward,
+  MoreHorizontal,
+  Pencil,
+  Pin,
+  Reply,
+  Smile,
+  Star,
+  Trash2,
+} from 'lucide-react';
 import AttachmentBubble from './AttachmentBubble.jsx';
 import ImageLightbox from './ImageLightbox.jsx';
 import { QUICK_REACTIONS } from '../utils/emojis.js';
@@ -47,7 +57,6 @@ function placePopover(anchorRect, popoverEl, { preferMine }) {
   return { top, left, placement };
 }
 
-// Relative timestamp formatting
 function formatRelativeTime(iso) {
   const diff = Date.now() - new Date(iso).getTime();
   const mins = Math.floor(diff / 60000);
@@ -58,9 +67,18 @@ function formatRelativeTime(iso) {
   return new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-// Read receipt checkmark SVGs
 function ReadReceipt({ status }) {
   if (!status) return null;
+
+  if (status === 'sending') {
+    return (
+      <span className="read-receipt sending" title="Sending">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+          <circle cx="12" cy="12" r="9" opacity="0.35" />
+        </svg>
+      </span>
+    );
+  }
 
   if (status === 'sent') {
     return (
@@ -91,10 +109,18 @@ export default function MessageBubble({
   grouped,
   senderLabel,
   replyPreview,
+  starred,
+  pinned,
   onDelete,
+  onDeleteForMe,
   onReact,
   onReply,
   onEdit,
+  onCopy,
+  onForward,
+  onStar,
+  onPin,
+  onJumpToReply,
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [reactOpen, setReactOpen] = useState(false);
@@ -113,13 +139,13 @@ export default function MessageBubble({
 
   const keyResolver = resolveSecretKey || resolveAttachmentKey;
 
-  // Determine read receipt status for own messages
   const receiptStatus = useMemo(() => {
     if (!isMine) return null;
+    if (message._status === 'sending') return 'sending';
     if (message.readAt) return 'read';
     if (message.deliveredAt) return 'delivered';
     return 'sent';
-  }, [isMine, message.readAt, message.deliveredAt]);
+  }, [isMine, message.readAt, message.deliveredAt, message._status]);
 
   const relativeTime = useMemo(() => formatRelativeTime(message.createdAt), [message.createdAt]);
   const fullTime = useMemo(() => new Date(message.createdAt).toLocaleString(), [message.createdAt]);
@@ -191,48 +217,50 @@ export default function MessageBubble({
         {menuOpen && (
           <>
             {onReply && (
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  closeAll();
-                  onReply(message);
-                }}
-              >
-                <span className="message-menu-icon" aria-hidden="true">
-                  <Reply size={16} strokeWidth={2} />
-                </span>
+              <button type="button" role="menuitem" onClick={() => { closeAll(); onReply(message); }}>
+                <span className="message-menu-icon" aria-hidden="true"><Reply size={16} strokeWidth={2} /></span>
                 <span>Reply</span>
               </button>
             )}
+            {hasTextContent && onCopy && (
+              <button type="button" role="menuitem" onClick={() => { closeAll(); onCopy(message); }}>
+                <span className="message-menu-icon" aria-hidden="true"><Copy size={16} strokeWidth={2} /></span>
+                <span>Copy</span>
+              </button>
+            )}
+            {hasTextContent && onForward && (
+              <button type="button" role="menuitem" onClick={() => { closeAll(); onForward(message); }}>
+                <span className="message-menu-icon" aria-hidden="true"><Forward size={16} strokeWidth={2} /></span>
+                <span>Forward</span>
+              </button>
+            )}
+            {onStar && (
+              <button type="button" role="menuitem" onClick={() => { closeAll(); onStar(messageId); }}>
+                <span className="message-menu-icon" aria-hidden="true"><Star size={16} strokeWidth={2} /></span>
+                <span>{starred ? 'Unstar' : 'Star'}</span>
+              </button>
+            )}
+            {onPin && (
+              <button type="button" role="menuitem" onClick={() => { closeAll(); onPin(messageId); }}>
+                <span className="message-menu-icon" aria-hidden="true"><Pin size={16} strokeWidth={2} /></span>
+                <span>{pinned ? 'Unpin' : 'Pin'}</span>
+              </button>
+            )}
             {isMine && onEdit && !message.attachment && (
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  closeAll();
-                  onEdit(message);
-                }}
-              >
-                <span className="message-menu-icon" aria-hidden="true">
-                  <Pencil size={16} strokeWidth={2} />
-                </span>
+              <button type="button" role="menuitem" onClick={() => { closeAll(); onEdit(message); }}>
+                <span className="message-menu-icon" aria-hidden="true"><Pencil size={16} strokeWidth={2} /></span>
                 <span>Edit</span>
               </button>
             )}
+            {onDeleteForMe && (
+              <button type="button" role="menuitem" onClick={() => { closeAll(); onDeleteForMe(messageId); }}>
+                <span className="message-menu-icon" aria-hidden="true"><Trash2 size={16} strokeWidth={2} /></span>
+                <span>Delete for me</span>
+              </button>
+            )}
             {isMine && onDelete && (
-              <button
-                type="button"
-                className="danger"
-                role="menuitem"
-                onClick={() => {
-                  closeAll();
-                  onDelete(messageId);
-                }}
-              >
-                <span className="message-menu-icon" aria-hidden="true">
-                  <Trash2 size={16} strokeWidth={2} />
-                </span>
+              <button type="button" className="danger" role="menuitem" onClick={() => { closeAll(); onDelete(messageId); }}>
+                <span className="message-menu-icon" aria-hidden="true"><Trash2 size={16} strokeWidth={2} /></span>
                 <span>Delete for everyone</span>
               </button>
             )}
@@ -266,7 +294,7 @@ export default function MessageBubble({
     <>
       <motion.div
         ref={rootRef}
-        className={`message-row ${isMine ? 'mine' : 'theirs'} ${grouped ? 'grouped' : ''} ${anyPopover ? 'popover-open' : ''}`}
+        className={`message-row ${isMine ? 'mine' : 'theirs'} ${grouped ? 'grouped' : ''} ${anyPopover ? 'popover-open' : ''} ${pinned ? 'pinned' : ''} ${starred ? 'starred' : ''}`}
         initial={grouped ? false : { opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
@@ -274,11 +302,25 @@ export default function MessageBubble({
         <div className={`message-bubble-wrap ${isMine ? 'mine' : 'theirs'}`}>
           <div className={`message-bubble ${isMine ? 'mine' : 'theirs'} ${grouped ? 'grouped' : ''}`}>
             {senderLabel && !isMine && !grouped && <div className="message-sender-label">{senderLabel}</div>}
+            {(pinned || starred) && (
+              <div className="message-flags">
+                {pinned && <span title="Pinned"><Pin size={12} /></span>}
+                {starred && <span title="Starred"><Star size={12} /></span>}
+              </div>
+            )}
+            {message.forwardedFrom?.username && (
+              <div className="message-forwarded-label">Forwarded from {message.forwardedFrom.username}</div>
+            )}
             {replyPreview && (
-              <div className="message-reply-preview">
+              <button
+                type="button"
+                className="message-reply-preview"
+                onClick={() => onJumpToReply?.(message.replyTo?.id || message.replyTo?._id)}
+                disabled={!onJumpToReply}
+              >
                 <span className="message-reply-label">{replyPreview.label}</span>
                 <span className="message-reply-text">{replyPreview.text}</span>
-              </div>
+              </button>
             )}
             {message.attachment && (
               <AttachmentBubble

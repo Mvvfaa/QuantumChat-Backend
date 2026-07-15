@@ -6,6 +6,7 @@ import {
   MessageSquare,
   Mic,
   Paperclip,
+  Pin,
   Send,
   Smile,
   Square,
@@ -41,8 +42,18 @@ import ThemeSwitcher from '../components/ThemeSwitcher.jsx';
 import DateSeparator from '../components/DateSeparator.jsx';
 import MessageSearch from '../components/MessageSearch.jsx';
 import DragDropOverlay from '../components/DragDropOverlay.jsx';
+import TypingIndicator from '../components/TypingIndicator.jsx';
+import ForwardModal from '../components/ForwardModal.jsx';
 import { useToast } from '../components/ToastProvider.jsx';
 import { getHiddenChatIds, hideChat, unhideChat } from '../utils/hiddenChats.js';
+import {
+  deleteMessageForMe,
+  getDeletedForMeIds,
+  getPinnedIds,
+  getStarredIds,
+  togglePinnedMessage,
+  toggleStarredMessage,
+} from '../utils/messageExtras.js';
 
 const MAX_VOICE_SECONDS = 60;
 const ACTIVE_WINDOW_MS = 5 * 60 * 1000;
@@ -115,9 +126,23 @@ export default function Chat() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
+  const [peerTyping, setPeerTyping] = useState(false);
+  const [onlineUserIds, setOnlineUserIds] = useState(() => new Set());
+  const [deletedForMeIds, setDeletedForMeIds] = useState(() => getDeletedForMeIds(user?.id));
+  const [starredIds, setStarredIds] = useState(() => getStarredIds(user?.id));
+  const [pinnedIds, setPinnedIds] = useState([]);
+  const [forwardMessage, setForwardMessage] = useState(null);
+  const [forwardBusy, setForwardBusy] = useState(false);
+  const [hasMoreMessages, setHasMoreMessages] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [extrasTick, setExtrasTick] = useState(0);
 
   const messageListRef = useRef(null);
   const bottomRef = useRef(null);
+  const typingPeerTimeoutRef = useRef(null);
+  const loadingOlderRef = useRef(false);
+  const oldestCreatedAtRef = useRef(null);
+  const loadOlderMessagesRef = useRef(null);
   const fileInputRef = useRef(null);
   const keyFileInputRef = useRef(null);
   const textareaRef = useRef(null);
@@ -151,7 +176,10 @@ export default function Chat() {
     if (!isUp) {
       setHasUnread(false);
     }
-  }, []);
+    if (el.scrollTop < 80 && hasMoreMessages && !loadingOlderRef.current) {
+      loadOlderMessagesRef.current?.();
+    }
+  }, [hasMoreMessages]);
 
   const resolveMySecretKey = useCallback(
     (targetPublicKeyHex) => findSecretKeyForPublicKey(user.id, targetPublicKeyHex),
@@ -328,6 +356,11 @@ export default function Chat() {
         }
         return next;
       });
+
+      if (String(raw.from) !== String(user.id) && !raw.group) {
+        const socket = getSocket();
+        socket?.emit('message:delivered', { messageId: raw.id || raw._id });
+      }
     }
 
     function handleDeleted(payload) {
@@ -359,17 +392,95 @@ export default function Chat() {
       });
     }
 
+    function handleTypingStart({ from } = {}) {
+      const current = selectedRef.current;
+      if (!current || current.type !== 'dm') return;
+      if (String(from) !== String(current.id)) return;
+      setPeerTyping(true);
+      clearTimeout(typingPeerTimeoutRef.current);
+      typingPeerTimeoutRef.current = setTimeout(() => setPeerTyping(false), 3000);
+    }
+
+    function handleTypingStop({ from } = {}) {
+      const current = selectedRef.current;
+      if (!current || current.type !== 'dm') return;
+      if (String(from) !== String(current.id)) return;
+      setPeerTyping(false);
+    }
+
+    function handlePresenceSnapshot({ onlineUserIds: ids } = {}) {
+      setOnlineUserIds(new Set((ids || []).map(String)));
+    }
+
+    function handlePresenceUpdate({ userId, online, lastLoginAt } = {}) {
+      setOnlineUserIds((prev) => {
+        const next = new Set(prev);
+        if (online) next.add(String(userId));
+        else next.delete(String(userId));
+        return next;
+      });
+      if (!online && lastLoginAt) {
+        setUsers((prev) =>
+          prev.map((u) => (String(u.id) === String(userId) ? { ...u, lastLoginAt } : u))
+        );
+      }
+    }
+
+    function handleMessageStatus(payload) {
+      if (!payload) return;
+      if (payload.bulk && payload.conversationWith) {
+        const peer = String(payload.conversationWith);
+        setMessages((prev) =>
+          prev.map((m) =>
+            String(m.to) === peer || String(m.from) === peer
+              ? {
+                  ...m,
+                  deliveredAt: m.deliveredAt || payload.readAt,
+                  readAt: String(m.from) === String(user.id) ? payload.readAt || m.readAt : m.readAt,
+                }
+              : m
+          )
+        );
+        return;
+      }
+      const id = String(payload.id || '');
+      if (!id) return;
+      setMessages((prev) =>
+        prev.map((m) =>
+          String(m.id || m._id) === id
+            ? {
+                ...m,
+                deliveredAt: payload.deliveredAt || m.deliveredAt,
+                readAt: payload.readAt || m.readAt,
+                _status: undefined,
+              }
+            : m
+        )
+      );
+    }
+
     socket.on('message:new', handleIncoming);
     socket.on('message:deleted', handleDeleted);
     socket.on('message:reaction', handleReaction);
     socket.on('message:edited', handleEdited);
     socket.on('group:new', handleGroupNew);
+    socket.on('typing:start', handleTypingStart);
+    socket.on('typing:stop', handleTypingStop);
+    socket.on('presence:snapshot', handlePresenceSnapshot);
+    socket.on('presence:update', handlePresenceUpdate);
+    socket.on('message:status', handleMessageStatus);
     return () => {
       socket.off('message:new', handleIncoming);
       socket.off('message:deleted', handleDeleted);
       socket.off('message:reaction', handleReaction);
       socket.off('message:edited', handleEdited);
       socket.off('group:new', handleGroupNew);
+      socket.off('typing:start', handleTypingStart);
+      socket.off('typing:stop', handleTypingStop);
+      socket.off('presence:snapshot', handlePresenceSnapshot);
+      socket.off('presence:update', handlePresenceUpdate);
+      socket.off('message:status', handleMessageStatus);
+      clearTimeout(typingPeerTimeoutRef.current);
     };
   }, [hasLocalKeyring, user, decorate, scrollToBottom, recordActivityFromMessage, bumpActivity]);
 
@@ -377,59 +488,87 @@ export default function Chat() {
     if (!selected || !hasLocalKeyring) return undefined;
 
     let cancelled = false;
-    let firstLoad = true;
+    setPeerTyping(false);
+    setHasMoreMessages(false);
+    oldestCreatedAtRef.current = null;
+    setPinnedIds(getPinnedIds(user.id, selected.key));
+
     const endpoint =
       selected.type === 'group' ? `/groups/${selected.id}/messages` : `/messages/${selected.id}`;
 
-    const fetchMessages = () => {
-      if (firstLoad) setLoadingMessages(true);
-      client
-        .get(endpoint)
-        .then((res) => {
-          if (cancelled) return;
-          const next = (res.data.data || []).map(decorate);
-          if (next.length) {
-            const last = next[next.length - 1];
-            recordActivityFromMessage(last);
-          }
-          setMessages((prev) => {
-            const same =
-              prev.length === next.length &&
-              prev.every((m, i) => (m.id || m._id) === (next[i].id || next[i]._id));
-            if (!same && !firstLoad) {
-              const prevIds = new Set(prev.map((m) => String(m.id || m._id)));
-              const hasNewIncoming = next.some(
-                (m) => !prevIds.has(String(m.id || m._id)) && String(m.from) !== String(user.id)
-              );
-              if (hasNewIncoming) playReceiveSound();
-            }
-            return same ? prev : next;
-          });
-          if (firstLoad) {
-            markConversationRead(user.id, selected.key);
-            bumpActivity();
-            setTimeout(() => scrollToBottom('auto'), 50);
-          }
-        })
-        .finally(() => {
-          if (firstLoad) {
-            setLoadingMessages(false);
-            firstLoad = false;
-          }
-        });
-    };
+    setLoadingMessages(true);
+    client
+      .get(endpoint, { params: { limit: 80, markRead: 1 } })
+      .then((res) => {
+        if (cancelled) return;
+        const next = (res.data.data || []).map(decorate);
+        setHasMoreMessages(Boolean(res.data.meta?.hasMore));
+        oldestCreatedAtRef.current = next[0]?.createdAt || null;
+        if (next.length) {
+          const last = next[next.length - 1];
+          recordActivityFromMessage(last);
+        }
+        setMessages(next);
+        markConversationRead(user.id, selected.key);
+        bumpActivity();
+        if (selected.type === 'dm') {
+          client.post(`/messages/${selected.id}/read`).catch(() => {});
+        }
+        setTimeout(() => scrollToBottom('auto'), 50);
+      })
+      .catch((err) => showToast(err.response?.data?.error || 'Failed to load messages', 'error'))
+      .finally(() => {
+        if (!cancelled) setLoadingMessages(false);
+      });
 
-    fetchMessages();
-    const intervalId = setInterval(fetchMessages, 3000);
     return () => {
       cancelled = true;
-      clearInterval(intervalId);
     };
-  }, [selected, hasLocalKeyring, decorate, scrollToBottom, user.id, recordActivityFromMessage, bumpActivity]);
+  }, [selected, hasLocalKeyring, decorate, scrollToBottom, user.id, recordActivityFromMessage, bumpActivity, showToast]);
 
+  const loadOlderMessages = useCallback(async () => {
+    if (!selected || !hasMoreMessages || loadingOlderRef.current || !oldestCreatedAtRef.current) return;
+    loadingOlderRef.current = true;
+    setLoadingOlder(true);
+    const el = messageListRef.current;
+    const prevHeight = el?.scrollHeight || 0;
+    const endpoint =
+      selected.type === 'group' ? `/groups/${selected.id}/messages` : `/messages/${selected.id}`;
+    try {
+      const { data } = await client.get(endpoint, {
+        params: { limit: 40, before: oldestCreatedAtRef.current, markRead: 0 },
+      });
+      const older = (data.data || []).map(decorate);
+      setHasMoreMessages(Boolean(data.meta?.hasMore));
+      if (older.length) {
+        oldestCreatedAtRef.current = older[0].createdAt;
+        setMessages((prev) => {
+          const ids = new Set(prev.map((m) => String(m.id || m._id)));
+          const merged = [...older.filter((m) => !ids.has(String(m.id || m._id))), ...prev];
+          return merged;
+        });
+        requestAnimationFrame(() => {
+          if (el) el.scrollTop = el.scrollHeight - prevHeight;
+        });
+      }
+    } catch {
+      // ignore
+    } finally {
+      loadingOlderRef.current = false;
+      setLoadingOlder(false);
+    }
+  }, [selected, hasMoreMessages, decorate]);
+
+  loadOlderMessagesRef.current = loadOlderMessages;
+
+  // Keep auto-scroll only when near bottom for new messages — avoid jump on older loads
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    if (loadingOlder) return;
+    const el = messageListRef.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    if (nearBottom) bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, loadingOlder]);
 
   const canChat = hasLocalKeyring;
   const isGroupChat = selected?.type === 'group';
@@ -991,6 +1130,74 @@ export default function Chat() {
     });
   }
 
+  function handleDeleteForMe(messageId) {
+    setDeletedForMeIds(deleteMessageForMe(user.id, messageId));
+    setExtrasTick((n) => n + 1);
+    showToast('Message removed for you', 'success');
+  }
+
+  function handleCopyMessage(message) {
+    if (!message?.text) return;
+    navigator.clipboard?.writeText(message.text).then(
+      () => showToast('Copied to clipboard', 'success'),
+      () => showToast('Could not copy message', 'error')
+    );
+  }
+
+  function handleStarMessage(messageId) {
+    setStarredIds(toggleStarredMessage(user.id, messageId));
+    setExtrasTick((n) => n + 1);
+  }
+
+  function handlePinMessage(messageId) {
+    if (!selected?.key) return;
+    setPinnedIds(togglePinnedMessage(user.id, selected.key, messageId));
+    setExtrasTick((n) => n + 1);
+  }
+
+  function handleJumpToReply(replyId) {
+    if (!replyId) return;
+    handleSearchResult(String(replyId));
+  }
+
+  async function handleForwardToConversation(target) {
+    if (!forwardMessage?.text || !target || target.type !== 'dm') return;
+    setForwardBusy(true);
+    try {
+      const peer = target.peer || users.find((u) => String(u.id) === String(target.id));
+      const myKey = pickRandom(getCurrentKeySet(user.id));
+      const recipientKeys = (peer?.publicKeys || []).filter(Boolean);
+      if (!myKey?.publicKey || recipientKeys.length === 0) {
+        showToast('Missing encryption keys for this conversation', 'error');
+        return;
+      }
+      const forRecipient = sealMessage(forwardMessage.text, pickRandom(recipientKeys));
+      const forSender = sealMessage(forwardMessage.text, myKey.publicKey);
+      const { data } = await client.post('/messages', {
+        to: target.id,
+        forRecipient,
+        forSender,
+        forwardedFrom: {
+          username: user.username,
+          messageId: forwardMessage.id || forwardMessage._id,
+        },
+      });
+      if (selected?.key === target.key) {
+        setMessages((prev) => {
+          const id = String(data.data.id || data.data._id);
+          if (prev.some((m) => String(m.id || m._id) === id)) return prev;
+          return [...prev, decorate(data.data)];
+        });
+      }
+      showToast(`Forwarded to ${target.title}`, 'success');
+      setForwardMessage(null);
+    } catch (err) {
+      showToast(err.response?.data?.error || 'Failed to forward message', 'error');
+    } finally {
+      setForwardBusy(false);
+    }
+  }
+
   async function executeDeleteMessage(messageId) {
     try {
       setConfirmBusy(true);
@@ -1122,28 +1329,41 @@ export default function Chat() {
       const count = (group?.members || []).length;
       return count ? `${count} members` : 'Group chat';
     }
+    if (onlineUserIds.has(String(selected.id))) return 'online';
+    if (peerTyping) return 'typing…';
     const peer = selected.peer || users.find((u) => String(u.id) === String(selected.id));
     return formatLastSeen(peer?.lastLoginAt);
-  }, [selected, groups, users]);
+  }, [selected, groups, users, onlineUserIds, peerTyping]);
 
   const headerOnline = useMemo(() => {
     if (!selected || selected.type !== 'dm') return false;
+    if (onlineUserIds.has(String(selected.id))) return true;
     const peer = selected.peer || users.find((u) => String(u.id) === String(selected.id));
     return isRecentlyActive(peer?.lastLoginAt);
-  }, [selected, users]);
+  }, [selected, users, onlineUserIds]);
+
+  const visibleMessages = useMemo(() => {
+    const deleted = new Set(deletedForMeIds.map(String));
+    return messages.filter((m) => !deleted.has(String(m.id || m._id)));
+  }, [messages, deletedForMeIds, extrasTick]);
+
+  const pinnedMessages = useMemo(() => {
+    const set = new Set(pinnedIds.map(String));
+    return visibleMessages.filter((m) => set.has(String(m.id || m._id)));
+  }, [visibleMessages, pinnedIds]);
 
   // Build message list with date separators
   const messagesWithSeparators = useMemo(() => {
     const items = [];
-    messages.forEach((m, i) => {
-      const prev = messages[i - 1];
+    visibleMessages.forEach((m, i) => {
+      const prev = visibleMessages[i - 1];
       if (!prev || !isSameDay(prev.createdAt, m.createdAt)) {
         items.push({ type: 'separator', date: m.createdAt, key: `sep-${m.createdAt}` });
       }
       items.push({ type: 'message', data: m, key: m.id || m._id });
     });
     return items;
-  }, [messages]);
+  }, [visibleMessages]);
 
   // Floating chat bubbles for empty state
   const floatingBubbles = useMemo(() => {
@@ -1290,7 +1510,11 @@ export default function Chat() {
 
             {searchOpen && selected && (
               <MessageSearch
-                messages={messages}
+                messages={visibleMessages.map((m) => ({
+                  id: m.id || m._id,
+                  text: m.text,
+                  timestamp: m.createdAt,
+                }))}
                 onResultSelect={handleSearchResult}
                 isOpen={searchOpen}
                 onClose={() => setSearchOpen(false)}
@@ -1308,6 +1532,22 @@ export default function Chat() {
               </div>
             ) : (
               <>
+                {pinnedMessages.length > 0 && (
+                  <div className="pinned-messages-bar">
+                    {pinnedMessages.slice(0, 3).map((m) => (
+                      <button
+                        key={m.id || m._id}
+                        type="button"
+                        className="pinned-message-chip"
+                        onClick={() => handleSearchResult(m.id || m._id)}
+                      >
+                        <Pin size={12} />
+                        <span>{m.text || (m.attachment ? 'Attachment' : 'Pinned message')}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
                 {isDragging && (
                   <DragDropOverlay isVisible={true} onFileDrop={sendAttachmentFile} />
                 )}
@@ -1323,6 +1563,12 @@ export default function Chat() {
                     exit={{ opacity: 0, x: -12 }}
                     transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
                   >
+                    {loadingOlder && <div className="load-older-hint">Loading earlier messages…</div>}
+                    {hasMoreMessages && !loadingOlder && (
+                      <button type="button" className="load-older-btn" onClick={loadOlderMessages}>
+                        Load earlier messages
+                      </button>
+                    )}
                     {loadingMessages ? (
                       <>
                         <div className="skeleton-message-bubble theirs skeleton" />
@@ -1344,16 +1590,18 @@ export default function Chat() {
                           prevMsg &&
                           String(prevMsg.from) === String(m.from) &&
                           new Date(m.createdAt) - new Date(prevMsg.createdAt) < 120000;
+                        const mid = String(m.id || m._id);
 
                         return (
-                          <div key={item.key} id={`msg-${m.id || m._id}`}>
+                          <div key={item.key} id={`msg-${mid}`}>
                             <MessageBubble
-                              key={m.id || m._id}
                               message={m}
                               isMine={String(m.from) === String(user.id)}
                               currentUserId={user.id}
                               resolveSecretKey={resolveMySecretKey}
                               grouped={isGrouped}
+                              starred={starredIds.map(String).includes(mid)}
+                              pinned={pinnedIds.map(String).includes(mid)}
                               senderLabel={
                                 isGroupChat ? usernameById.get(String(m.from)) || 'Member' : undefined
                               }
@@ -1366,7 +1614,13 @@ export default function Chat() {
                                   : null
                               }
                               onDelete={handleDeleteMessage}
+                              onDeleteForMe={handleDeleteForMe}
                               onReact={handleReactMessage}
+                              onCopy={handleCopyMessage}
+                              onForward={setForwardMessage}
+                              onStar={handleStarMessage}
+                              onPin={handlePinMessage}
+                              onJumpToReply={handleJumpToReply}
                               onReply={(msg) => {
                                 setEditingMessage(null);
                                 setReplyTo(msg);
@@ -1381,6 +1635,10 @@ export default function Chat() {
                         );
                       })
                     )}
+                    <TypingIndicator
+                      isTyping={peerTyping && selected.type === 'dm'}
+                      username={selected.title}
+                    />
                     <div ref={bottomRef} />
                   </motion.div>
                 </AnimatePresence>
@@ -1548,6 +1806,15 @@ export default function Chat() {
           onImportKeys={handleImportKeyFile}
           onGenerateKeys={handleGenerateKeys}
           onUserUpdated={updateSessionUser}
+        />
+      )}
+
+      {forwardMessage && (
+        <ForwardModal
+          conversations={conversations}
+          busy={forwardBusy}
+          onClose={() => !forwardBusy && setForwardMessage(null)}
+          onForward={handleForwardToConversation}
         />
       )}
 
