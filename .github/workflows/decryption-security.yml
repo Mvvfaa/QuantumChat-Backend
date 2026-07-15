@@ -16,7 +16,7 @@ on:
 
 jobs:
   attack-the-app:
-    name: 🔒 Attempt to decrypt, forge, and inject against the live app
+    name: Security Attack Suite
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

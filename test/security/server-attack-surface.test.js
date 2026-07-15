@@ -167,7 +167,12 @@ test('sealMessage() has no parameter for a secret/private key at all', () => {
 test('the Message and Attachment Mongoose schemas define no secret/private-key-shaped field', async () => {
   const { default: Message } = await import('../../src/models/Message.js');
   const { default: Attachment } = await import('../../src/models/Attachment.js');
-  const suspicious = /secret|privatekey/i;
+  // Requires "key" immediately after secret/private — matches secretKey,
+  // privateKey, secret_key, etc, but not incidental uses of "secret" like
+  // secretboxNonce (nacl.secretbox is a legitimate symmetric-encryption
+  // primitive used for group messages; its nonce is meant to be public,
+  // same as any other nonce — see the root README on what a nonce is for).
+  const suspicious = /(secret|private)[-_]?key/i;
   for (const [name, Model] of [
     ['Message', Message],
     ['Attachment', Attachment],
