@@ -225,3 +225,118 @@ export async function getGroupMessages(req, res) {
     res.status(500).json({ success: false, error: err.message });
   }
 }
+
+//New functions to add members, change group name, remove members e.t.c:
+// groupController.js additions
+
+export async function renameGroup(req, res) {
+  try {
+    const { id } = req.params;
+    const { name } = req.body;
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ success: false, error: 'Invalid group id' });
+    }
+    if (!name || typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 60) {
+      return res.status(400).json({ success: false, error: 'Group name must be 2-60 characters' });
+    }
+    const group = await Group.findById(id);
+    if (!group) return res.status(404).json({ success: false, error: 'Group not found' });
+    if (!group.members.some((m) => m.toString() === req.user._id.toString())) {
+      return res.status(403).json({ success: false, error: 'Not a group member' });
+    }
+    group.name = name.trim();
+    await group.save();
+    const populated = await group.populate('members', 'username email publicKeys lastLoginAt keyRotatedAt');
+    const payload = populated.toPublicJSON();
+    emitToMembers(req.app.get('io'), group.members, 'group:updated', payload);
+    res.json({ success: true, data: payload });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function addMembers(req, res) {
+  try {
+    const { id } = req.params;
+    const { memberIds } = req.body;
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ success: false, error: 'Invalid group id' });
+    }
+    const group = await Group.findById(id);
+    if (!group) return res.status(404).json({ success: false, error: 'Group not found' });
+    if (!group.members.some((m) => m.toString() === req.user._id.toString())) {
+      return res.status(403).json({ success: false, error: 'Not a group member' });
+    }
+    const existing = new Set(group.members.map(String));
+    const toAdd = [...new Set((memberIds || []).map(String))].filter(
+      (id) => !existing.has(id) && mongoose.isValidObjectId(id)
+    );
+    if (toAdd.length === 0) {
+      return res.status(400).json({ success: false, error: 'No new members to add' });
+    }
+    const found = await User.find({ _id: { $in: toAdd } }).select('_id');
+    if (found.length !== toAdd.length) {
+      return res.status(400).json({ success: false, error: 'One or more members were not found' });
+    }
+    group.members.push(...toAdd);
+    await group.save();
+    const populated = await group.populate('members', 'username email publicKeys lastLoginAt keyRotatedAt');
+    const payload = populated.toPublicJSON();
+    emitToMembers(req.app.get('io'), group.members, 'group:updated', payload);
+    res.json({ success: true, data: payload });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function removeMember(req, res) {
+  // only createdBy can remove someone else; anyone can remove themselves (= leave)
+  try {
+    const { id, memberId } = req.params;
+    if (!mongoose.isValidObjectId(id) || !mongoose.isValidObjectId(memberId)) {
+      return res.status(400).json({ success: false, error: 'Invalid id' });
+    }
+    const group = await Group.findById(id);
+    if (!group) return res.status(404).json({ success: false, error: 'Group not found' });
+    const isSelf = memberId === req.user._id.toString();
+    const isCreator = group.createdBy.toString() === req.user._id.toString();
+    if (!isSelf && !isCreator) {
+      return res.status(403).json({ success: false, error: 'Only the creator can remove other members' });
+    }
+    const before = group.members.map(String);
+    group.members = group.members.filter((m) => m.toString() !== memberId);
+    if (group.members.length === 0) {
+      await group.deleteOne();
+      emitToMembers(req.app.get('io'), before, 'group:deleted', { id });
+      return res.json({ success: true, data: { id, deleted: true } });
+    }
+    await group.save();
+    const populated = await group.populate('members', 'username email publicKeys lastLoginAt keyRotatedAt');
+    const payload = populated.toPublicJSON();
+    emitToMembers(req.app.get('io'), before, 'group:updated', payload);
+    res.json({ success: true, data: payload });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function deleteGroup(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ success: false, error: 'Invalid group id' });
+    }
+    const group = await Group.findById(id);
+    if (!group) return res.status(404).json({ success: false, error: 'Group not found' });
+    if (group.createdBy.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, error: 'Only the creator can delete the group' });
+    }
+    const members = group.members.map(String);
+    await group.deleteOne();
+    await Message.deleteMany({ group: id }); // orphaned messages
+    emitToMembers(req.app.get('io'), members, 'group:deleted', { id });
+    res.json({ success: true, data: { id, deleted: true } });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
