@@ -1,6 +1,7 @@
 import fs from 'fs';
 import mongoose from 'mongoose';
 import Attachment from '../models/Attachment.js';
+import Group from '../models/Group.js';
 import { resolveUploadPath } from '../middleware/upload.js';
 import { areUsersBlocked } from './userController.js';
 
@@ -12,8 +13,6 @@ function cleanupFiles(files = []) {
   }
 }
 
-// Dual-sealed upload: `file` is sealed to the recipient; optional `senderFile`
-// is sealed to the sender so they can decrypt their own attachments later.
 export async function uploadAttachment(req, res) {
   const recipientFile = req.files?.file?.[0] || req.file;
   const senderFile = req.files?.senderFile?.[0];
@@ -26,6 +25,8 @@ export async function uploadAttachment(req, res) {
 
     const {
       recipientId,
+      groupId,
+      secretboxNonce,
       nonce,
       ephemeralPublicKey,
       targetPublicKey,
@@ -33,6 +34,46 @@ export async function uploadAttachment(req, res) {
       forSenderEphemeralPublicKey,
       forSenderTargetPublicKey,
     } = req.body;
+
+    if (groupId) {
+      if (!mongoose.isValidObjectId(groupId)) {
+        cleanupFiles([recipientFile, senderFile]);
+        return res.status(400).json({ success: false, error: 'Valid groupId is required' });
+      }
+      if (!secretboxNonce || typeof secretboxNonce !== 'string') {
+        cleanupFiles([recipientFile, senderFile]);
+        return res.status(400).json({ success: false, error: 'secretboxNonce is required for group files' });
+      }
+      const group = await Group.findById(groupId);
+      if (!group || !group.isMember(req.user._id)) {
+        cleanupFiles([recipientFile, senderFile]);
+        return res.status(403).json({ success: false, error: 'Not a group member' });
+      }
+
+      const attachment = await Attachment.create({
+        owner: req.user._id,
+        group: groupId,
+        filename: recipientFile.originalname,
+        mimetype: recipientFile.mimetype || 'application/octet-stream',
+        size: recipientFile.size,
+        storagePath: recipientFile.filename,
+        encryption: 'secretbox',
+        secretboxNonce,
+      });
+
+      return res.status(201).json({
+        success: true,
+        data: {
+          id: attachment._id,
+          filename: attachment.filename,
+          mimetype: attachment.mimetype,
+          size: attachment.size,
+          encryption: 'secretbox',
+          secretboxNonce: attachment.secretboxNonce,
+          group: groupId,
+        },
+      });
+    }
 
     if (!recipientId || !mongoose.isValidObjectId(recipientId)) {
       cleanupFiles([recipientFile, senderFile]);
@@ -76,6 +117,7 @@ export async function uploadAttachment(req, res) {
       nonce,
       ephemeralPublicKey: ephemeralPublicKey.toLowerCase(),
       targetPublicKey: targetPublicKey.toLowerCase(),
+      encryption: 'sealed',
       ...(hasSenderCopy
         ? {
             forSenderStoragePath: senderFile.filename,
@@ -109,12 +151,25 @@ export async function downloadAttachment(req, res) {
 
   const userId = req.user._id.toString();
   const isOwner = attachment.owner.toString() === userId;
-  const isRecipient = attachment.recipient.toString() === userId;
+
+  if (attachment.group) {
+    const group = await Group.findById(attachment.group);
+    if (!group || !group.isMember(req.user._id)) {
+      return res.status(403).json({ success: false, error: 'Not authorized to access this attachment' });
+    }
+    res.setHeader('Content-Type', 'application/octet-stream');
+    return res.sendFile(resolveUploadPath(attachment.storagePath), (err) => {
+      if (err && !res.headersSent) {
+        res.status(404).json({ success: false, error: 'Encrypted file not found on disk' });
+      }
+    });
+  }
+
+  const isRecipient = attachment.recipient?.toString() === userId;
   if (!isOwner && !isRecipient) {
     return res.status(403).json({ success: false, error: 'Not authorized to access this attachment' });
   }
 
-  // Sender gets their own sealed copy when present; recipient gets the main copy.
   const storagePath =
     isOwner && attachment.forSenderStoragePath ? attachment.forSenderStoragePath : attachment.storagePath;
 

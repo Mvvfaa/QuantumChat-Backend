@@ -1,8 +1,18 @@
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
 export const KEY_SET_SIZE = 5;
+
+const privacySchema = new mongoose.Schema(
+  {
+    lastSeen: { type: String, enum: ['everyone', 'nobody'], default: 'everyone' },
+    online: { type: String, enum: ['everyone', 'nobody'], default: 'everyone' },
+    readReceipts: { type: Boolean, default: true },
+  },
+  { _id: false }
+);
 
 const userSchema = new mongoose.Schema(
   {
@@ -14,6 +24,24 @@ const userSchema = new mongoose.Schema(
       minlength: 3,
       maxlength: 30,
     },
+    displayName: {
+      type: String,
+      trim: true,
+      maxlength: 60,
+      default: '',
+    },
+    bio: {
+      type: String,
+      trim: true,
+      maxlength: 300,
+      default: '',
+    },
+    phone: {
+      type: String,
+      trim: true,
+      maxlength: 32,
+      default: '',
+    },
     email: {
       type: String,
       required: true,
@@ -21,17 +49,19 @@ const userSchema = new mongoose.Schema(
       trim: true,
       lowercase: true,
     },
+    emailVerified: {
+      type: Boolean,
+      default: false,
+    },
+    emailVerifyToken: { type: String, select: false },
+    emailVerifyExpires: { type: Date, select: false },
     password: {
       type: String,
       required: true,
       select: false,
     },
-    // Pool of 5 X25519 public keys (32 bytes, hex-encoded = 64 chars each).
-    // Senders pick one at random per message, so the same conversation
-    // spreads ciphertext across multiple keys instead of always the same
-    // one. The whole set of 5 is replaced on every login and every 30-minute
-    // rotation; matching private keys never leave the device (kept in a
-    // local keyring so history under retired keys stays decryptable).
+    passwordResetToken: { type: String, select: false },
+    passwordResetExpires: { type: Date, select: false },
     publicKeys: {
       type: [String],
       required: true,
@@ -40,7 +70,6 @@ const userSchema = new mongoose.Schema(
         message: `publicKeys must contain exactly ${KEY_SET_SIZE} 64-character hex public keys`,
       },
     },
-    // When this publicKeys set was last rotated in, for visibility/debugging.
     keyRotatedAt: {
       type: Date,
       default: Date.now,
@@ -48,8 +77,10 @@ const userSchema = new mongoose.Schema(
     lastLoginAt: {
       type: Date,
     },
-    // Users this account has blocked. Bidirectional send checks use this
-    // list so neither side can deliver new messages after a block.
+    privacy: {
+      type: privacySchema,
+      default: () => ({}),
+    },
     blockedUsers: [
       {
         type: mongoose.Schema.Types.ObjectId,
@@ -78,26 +109,53 @@ userSchema.methods.comparePassword = function comparePassword(candidate) {
   return bcrypt.compare(candidate, this.password);
 };
 
+userSchema.methods.createEmailVerifyToken = function createEmailVerifyToken() {
+  const token = crypto.randomBytes(32).toString('hex');
+  this.emailVerifyToken = crypto.createHash('sha256').update(token).digest('hex');
+  this.emailVerifyExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  return token;
+};
+
+userSchema.methods.createPasswordResetToken = function createPasswordResetToken() {
+  const token = crypto.randomBytes(32).toString('hex');
+  this.passwordResetToken = crypto.createHash('sha256').update(token).digest('hex');
+  this.passwordResetExpires = new Date(Date.now() + 60 * 60 * 1000);
+  return token;
+};
+
 userSchema.methods.toPublicJSON = function toPublicJSON() {
   let publicKeys = Array.isArray(this.publicKeys) ? this.publicKeys.filter(Boolean) : [];
   if (publicKeys.length === 0 && this.publicKey) {
     publicKeys = [this.publicKey];
   }
 
+  const privacy = this.privacy || {};
+  const showLastSeen = privacy.lastSeen !== 'nobody';
+
   return {
     id: this._id,
     username: this.username,
-    email: this.email,
+    displayName: this.displayName || '',
+    bio: this.bio || '',
     publicKeys: publicKeys.map((k) => String(k).toLowerCase()),
     keyRotatedAt: this.keyRotatedAt,
-    lastLoginAt: this.lastLoginAt,
+    lastLoginAt: showLastSeen ? this.lastLoginAt : null,
     hasAvatar: Boolean(this.avatarPath),
+    privacy: {
+      lastSeen: privacy.lastSeen || 'everyone',
+      online: privacy.online || 'everyone',
+      readReceipts: privacy.readReceipts !== false,
+    },
   };
 };
 
 userSchema.methods.toSelfJSON = function toSelfJSON() {
   return {
     ...this.toPublicJSON(),
+    email: this.email,
+    phone: this.phone || '',
+    emailVerified: Boolean(this.emailVerified),
+    lastLoginAt: this.lastLoginAt,
     blockedUsers: Array.isArray(this.blockedUsers) ? this.blockedUsers.map((id) => String(id)) : [],
   };
 };

@@ -5,23 +5,46 @@ const HEX_64 = /^[0-9a-f]{64}$/i;
 const attachmentSchema = new mongoose.Schema(
   {
     owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    recipient: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    recipient: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    group: { type: mongoose.Schema.Types.ObjectId, ref: 'Group', index: true },
     filename: { type: String, required: true },
     mimetype: { type: String, required: true },
     size: { type: Number, required: true },
-    // Recipient-sealed ciphertext on disk.
+    // Ciphertext on disk (DM sealed-box or group secretbox).
     storagePath: { type: String, required: true },
-    nonce: { type: String, required: true },
-    ephemeralPublicKey: { type: String, required: true, match: HEX_64 },
-    targetPublicKey: { type: String, required: true, match: HEX_64 },
-    // Optional second copy sealed to the sender's own key so they can replay
-    // voice notes / files on this (or another) device later.
+    // DM sealed-box fields (optional for group secretbox attachments)
+    nonce: { type: String },
+    ephemeralPublicKey: { type: String, match: HEX_64 },
+    targetPublicKey: { type: String, match: HEX_64 },
     forSenderStoragePath: { type: String },
     forSenderNonce: { type: String },
     forSenderEphemeralPublicKey: { type: String, match: HEX_64 },
     forSenderTargetPublicKey: { type: String, match: HEX_64 },
+    // group = secretbox ciphertext; key is only in sealed message envelopes
+    encryption: {
+      type: String,
+      enum: ['sealed', 'secretbox'],
+      default: 'sealed',
+    },
+    secretboxNonce: { type: String },
   },
   { timestamps: true }
 );
+
+attachmentSchema.pre('validate', function ensureShape(next) {
+  if (this.group) {
+    this.encryption = 'secretbox';
+    this.recipient = undefined;
+    return next();
+  }
+  if (!this.recipient) {
+    return next(new Error('DM attachments require a recipient'));
+  }
+  if (!this.nonce || !this.ephemeralPublicKey || !this.targetPublicKey) {
+    return next(new Error('DM attachments require sealed-box metadata'));
+  }
+  this.encryption = 'sealed';
+  next();
+});
 
 export default mongoose.model('Attachment', attachmentSchema, 'attachments');

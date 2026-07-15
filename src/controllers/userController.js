@@ -1,11 +1,15 @@
 import User, { KEY_SET_SIZE } from '../models/User.js';
+import Group from '../models/Group.js';
+import Message from '../models/Message.js';
+import Attachment from '../models/Attachment.js';
 import mongoose from 'mongoose';
 import fs from 'fs';
 import { resolveUploadPath } from '../middleware/upload.js';
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
 
-const PUBLIC_FIELDS = 'username email publicKeys keyRotatedAt lastLoginAt blockedUsers avatarPath avatarMimeType';
+const PUBLIC_FIELDS =
+  'username displayName bio phone email publicKeys keyRotatedAt lastLoginAt blockedUsers avatarPath avatarMimeType privacy emailVerified';
 
 export async function areUsersBlocked(userAId, userBId) {
   const [a, b] = await Promise.all([
@@ -33,6 +37,75 @@ export async function getUser(req, res) {
     return res.status(403).json({ success: false, error: 'User is blocked' });
   }
   res.json({ success: true, data: user.toPublicJSON() });
+}
+
+export async function updateProfile(req, res) {
+  try {
+    const { displayName, bio, phone, username, privacy } = req.body || {};
+    const user = req.user;
+
+    if (username != null) {
+      const next = String(username).trim();
+      if (next.length < 3 || next.length > 30) {
+        return res.status(400).json({ success: false, error: 'Username must be 3-30 characters' });
+      }
+      if (next !== user.username) {
+        const taken = await User.findOne({ username: next, _id: { $ne: user._id } }).select('_id');
+        if (taken) return res.status(409).json({ success: false, error: 'Username already taken' });
+        user.username = next;
+      }
+    }
+    if (displayName != null) {
+      if (typeof displayName !== 'string' || displayName.length > 60) {
+        return res.status(400).json({ success: false, error: 'Display name must be under 60 characters' });
+      }
+      user.displayName = displayName.trim();
+    }
+    if (bio != null) {
+      if (typeof bio !== 'string' || bio.length > 300) {
+        return res.status(400).json({ success: false, error: 'Bio must be under 300 characters' });
+      }
+      user.bio = bio.trim();
+    }
+    if (phone != null) {
+      if (typeof phone !== 'string' || phone.length > 32) {
+        return res.status(400).json({ success: false, error: 'Phone must be under 32 characters' });
+      }
+      user.phone = phone.trim();
+    }
+    if (privacy && typeof privacy === 'object') {
+      user.privacy = user.privacy || {};
+      if (privacy.lastSeen === 'everyone' || privacy.lastSeen === 'nobody') {
+        user.privacy.lastSeen = privacy.lastSeen;
+      }
+      if (privacy.online === 'everyone' || privacy.online === 'nobody') {
+        user.privacy.online = privacy.online;
+      }
+      if (typeof privacy.readReceipts === 'boolean') {
+        user.privacy.readReceipts = privacy.readReceipts;
+      }
+    }
+
+    await user.save();
+    res.json({ success: true, data: user.toSelfJSON() });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function listBlockedUsers(req, res) {
+  try {
+    const me = await User.findById(req.user._id).populate('blockedUsers', 'username displayName avatarPath');
+    const blocked = (me.blockedUsers || []).map((u) => ({
+      id: u._id || u,
+      username: u.username,
+      displayName: u.displayName || '',
+      hasAvatar: Boolean(u.avatarPath),
+    }));
+    res.json({ success: true, data: blocked });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 }
 
 export async function blockUser(req, res) {
@@ -63,11 +136,6 @@ export async function unblockUser(req, res) {
   res.json({ success: true, data: me.toSelfJSON() });
 }
 
-// Replaces the whole 5-key pool: used by the periodic 30-minute client-side
-// rotation, and to recover a wiped/new device. Messages sealed under keys
-// that are no longer in the pool stay decryptable only on devices whose
-// local keyring still holds the matching private key — an inherent
-// tradeoff of true E2E encryption, not a bug.
 export async function updatePublicKeys(req, res) {
   const { publicKeys } = req.body;
   const valid = Array.isArray(publicKeys) && publicKeys.length === KEY_SET_SIZE && publicKeys.every((k) => HEX_64.test(k));
@@ -94,7 +162,7 @@ export async function uploadAvatar(req, res) {
       try {
         fs.unlink(resolveUploadPath(req.user.avatarPath), () => {});
       } catch {
-        // ignore missing old file
+        // ignore
       }
     }
 
@@ -104,6 +172,24 @@ export async function uploadAvatar(req, res) {
     res.json({ success: true, data: req.user.toSelfJSON() });
   } catch (err) {
     if (req.file?.path) fs.unlink(req.file.path, () => {});
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function deleteAvatar(req, res) {
+  try {
+    if (req.user.avatarPath) {
+      try {
+        fs.unlink(resolveUploadPath(req.user.avatarPath), () => {});
+      } catch {
+        // ignore
+      }
+    }
+    req.user.avatarPath = null;
+    req.user.avatarMimeType = null;
+    await req.user.save();
+    res.json({ success: true, data: req.user.toSelfJSON() });
+  } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 }
@@ -125,6 +211,89 @@ export async function getAvatar(req, res) {
     res.setHeader('Content-Type', user.avatarMimeType || 'image/jpeg');
     res.setHeader('Cache-Control', 'private, max-age=3600');
     fs.createReadStream(filePath).pipe(res);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function exportAccountData(req, res) {
+  try {
+    const user = await User.findById(req.user._id);
+    const groups = await Group.find({ members: user._id }).select('name description createdAt createdBy members admins');
+    const messageCount = await Message.countDocuments({
+      $or: [{ from: user._id }, { to: user._id }, { 'envelopes.user': user._id }],
+    });
+    const attachmentCount = await Attachment.countDocuments({
+      $or: [{ owner: user._id }, { recipient: user._id }],
+    });
+
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      account: user.toSelfJSON(),
+      groups: groups.map((g) => ({
+        id: g._id,
+        name: g.name,
+        description: g.description,
+        createdAt: g.createdAt,
+        memberCount: (g.members || []).length,
+      })),
+      stats: { messageCount, attachmentCount },
+      note: 'Message bodies are end-to-end encrypted and are not included. Use Export chat in the app to download decrypted conversations from this device.',
+    };
+
+    res.setHeader('Content-Disposition', 'attachment; filename="quantumchat-data.json"');
+    res.json({ success: true, data: payload });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function deleteAccount(req, res) {
+  try {
+    const { password } = req.body || {};
+    if (!password) {
+      return res.status(400).json({ success: false, error: 'password is required to delete your account' });
+    }
+    const user = await User.findById(req.user._id).select('+password');
+    if (!user || !(await user.comparePassword(password))) {
+      return res.status(401).json({ success: false, error: 'Password is incorrect' });
+    }
+
+    const userId = user._id;
+
+    // Leave groups / remove membership
+    const groups = await Group.find({ members: userId });
+    for (const group of groups) {
+      group.members = group.members.filter((m) => String(m) !== String(userId));
+      group.admins = (group.admins || []).filter((a) => String(a) !== String(userId));
+      if (String(group.createdBy) === String(userId) && group.members.length) {
+        group.createdBy = group.members[0];
+        if (!group.admins.some((a) => String(a) === String(group.createdBy))) {
+          group.admins.push(group.createdBy);
+        }
+      }
+      if (group.members.length === 0) {
+        await Message.deleteMany({ group: group._id });
+        await group.deleteOne();
+      } else {
+        await group.save();
+      }
+    }
+
+    await Message.deleteMany({ $or: [{ from: userId }, { to: userId }] });
+    // Remove user from others' block lists
+    await User.updateMany({ blockedUsers: userId }, { $pull: { blockedUsers: userId } });
+
+    if (user.avatarPath) {
+      try {
+        fs.unlink(resolveUploadPath(user.avatarPath), () => {});
+      } catch {
+        // ignore
+      }
+    }
+
+    await user.deleteOne();
+    res.json({ success: true, data: { deleted: true } });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }

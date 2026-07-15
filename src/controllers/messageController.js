@@ -204,13 +204,14 @@ export async function getConversation(req, res) {
     const now = new Date();
     const deliveredIds = [];
     const readIds = [];
+    const allowReadReceipts = req.user.privacy?.readReceipts !== false;
     for (const msg of page) {
       if (String(msg.from) === String(userId) && String(msg.to) === String(req.user._id)) {
         if (!msg.deliveredAt) {
           msg.deliveredAt = now;
           deliveredIds.push(msg._id);
         }
-        if (markRead && !msg.readAt) {
+        if (markRead && allowReadReceipts && !msg.readAt) {
           msg.readAt = now;
           msg.deliveredAt = msg.deliveredAt || now;
           readIds.push(msg._id);
@@ -273,6 +274,13 @@ export async function markConversationRead(req, res) {
       return res.status(400).json({ success: false, error: 'Invalid user id' });
     }
     const now = new Date();
+    if (req.user.privacy?.readReceipts === false) {
+      const delivered = await Message.updateMany(
+        { from: userId, to: req.user._id, deliveredAt: null },
+        { $set: { deliveredAt: now } }
+      );
+      return res.json({ success: true, data: { updated: delivered.modifiedCount, readReceipts: false } });
+    }
     const result = await Message.updateMany(
       { from: userId, to: req.user._id, readAt: null },
       { $set: { deliveredAt: now, readAt: now } }

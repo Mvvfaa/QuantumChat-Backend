@@ -27,6 +27,15 @@ export function getOnlineUserIds() {
   return [...onlineUsers.keys()];
 }
 
+async function canBroadcastOnline(userId) {
+  try {
+    const user = await User.findById(userId).select('privacy');
+    return user?.privacy?.online !== 'nobody';
+  } catch {
+    return true;
+  }
+}
+
 export function attachSocket(io) {
   io.use(async (socket, next) => {
     try {
@@ -38,6 +47,7 @@ export function attachSocket(io) {
       if (!user) return next(new Error('User not found'));
 
       socket.userId = user._id.toString();
+      socket.privacyOnline = user.privacy?.online !== 'nobody';
       next();
     } catch (err) {
       next(new Error('Invalid or expired token'));
@@ -48,8 +58,20 @@ export function attachSocket(io) {
     const userId = socket.userId;
     socket.join(userId);
     setOnline(userId, socket.id);
-    io.emit('presence:update', { userId, online: true });
-    socket.emit('presence:snapshot', { onlineUserIds: getOnlineUserIds() });
+
+    (async () => {
+      const visible = socket.privacyOnline ?? (await canBroadcastOnline(userId));
+      if (visible) {
+        io.emit('presence:update', { userId, online: true });
+      }
+      // Snapshot only includes users who allow online visibility
+      const ids = getOnlineUserIds();
+      const users = await User.find({ _id: { $in: ids } }).select('privacy');
+      const visibleIds = users
+        .filter((u) => u.privacy?.online !== 'nobody')
+        .map((u) => String(u._id));
+      socket.emit('presence:snapshot', { onlineUserIds: visibleIds });
+    })();
 
     socket.on('typing:start', ({ to } = {}) => {
       if (!to) return;
@@ -92,7 +114,10 @@ export function attachSocket(io) {
         } catch {
           // ignore
         }
-        io.emit('presence:update', { userId, online: false, lastLoginAt: new Date().toISOString() });
+        const visible = await canBroadcastOnline(userId);
+        if (visible) {
+          io.emit('presence:update', { userId, online: false, lastLoginAt: new Date().toISOString() });
+        }
       }
     });
   });
