@@ -5,11 +5,13 @@ import Group from '../models/Group.js';
 import User from '../models/User.js';
 import Message from '../models/Message.js';
 import { resolveUploadPath } from '../middleware/upload.js';
+import { sealForPublicKey } from '../utils/sealedBox.js';
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
 const ATTACHMENT_POPULATE =
   'filename mimetype size nonce ephemeralPublicKey targetPublicKey forSenderNonce forSenderEphemeralPublicKey forSenderTargetPublicKey encryption secretboxNonce group';
-const MEMBER_POPULATE = 'username email publicKeys lastLoginAt keyRotatedAt avatarPath';
+const MEMBER_POPULATE =
+  'username email publicKeys lastLoginAt keyRotatedAt avatarPath isSystemUser systemRole verified';
 
 function validateEnvelope(envelope) {
   return (
@@ -215,7 +217,7 @@ export async function updateGroup(req, res) {
       return res.status(403).json({ success: false, error: 'Only admins can update group settings' });
     }
 
-    const { name, description, onlyAdminsCanPost, onlyAdminsCanAddMembers } = req.body;
+    const { name, description, onlyAdminsCanPost, onlyAdminsCanAddMembers, quantumAI } = req.body;
     if (name != null) {
       if (typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 60) {
         return res.status(400).json({ success: false, error: 'Group name must be 2-60 characters' });
@@ -230,6 +232,21 @@ export async function updateGroup(req, res) {
     }
     if (typeof onlyAdminsCanPost === 'boolean') group.onlyAdminsCanPost = onlyAdminsCanPost;
     if (typeof onlyAdminsCanAddMembers === 'boolean') group.onlyAdminsCanAddMembers = onlyAdminsCanAddMembers;
+    if (quantumAI && typeof quantumAI === 'object') {
+      const next = {
+        enabled: typeof quantumAI.enabled === 'boolean' ? quantumAI.enabled : group.quantumAI?.enabled,
+        invocationPolicy: ['members', 'admins'].includes(quantumAI.invocationPolicy)
+          ? quantumAI.invocationPolicy
+          : group.quantumAI?.invocationPolicy,
+        maxContextMessages: Number.isInteger(quantumAI.maxContextMessages)
+          ? Math.min(Math.max(quantumAI.maxContextMessages, 0), 20)
+          : group.quantumAI?.maxContextMessages,
+        dailyLimit: Number.isInteger(quantumAI.dailyLimit)
+          ? Math.min(Math.max(quantumAI.dailyLimit, 1), 1000)
+          : group.quantumAI?.dailyLimit,
+      };
+      group.quantumAI = next;
+    }
 
     await group.save();
     const populated = await loadGroup(group._id);
@@ -581,7 +598,9 @@ export async function sendGroupMessage(req, res) {
       return res.status(403).json({ success: false, error: 'Only admins can post in this group' });
     }
 
-    const messageKind = ['text', 'announcement', 'poll', 'event', 'file'].includes(kind) ? kind : 'text';
+    const messageKind = ['text', 'announcement', 'poll', 'event', 'file', 'ai_note'].includes(kind)
+      ? kind
+      : 'text';
     if (messageKind === 'announcement' && !group.isAdmin(req.user._id)) {
       return res.status(403).json({ success: false, error: 'Only admins can post announcements' });
     }
@@ -665,6 +684,106 @@ export async function sendGroupMessage(req, res) {
     res.status(201).json({ success: true, data: payload });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function publishQuantumAIGroupResponse(req, res) {
+  try {
+    const { groupId } = req.params;
+    const { content, contentHash, requestId, receipt, model } = req.body || {};
+    if (
+      !mongoose.isValidObjectId(groupId) ||
+      !/^[0-9a-f]{64}$/i.test(contentHash || '') ||
+      !/^[0-9a-f-]{36}$/i.test(requestId || '') ||
+      typeof content !== 'string' ||
+      !content.trim() ||
+      content.length > 100_000
+    ) {
+      return res.status(400).json({ success: false, error: 'Invalid QuantumAI response payload' });
+    }
+    const secret = process.env.QUANTUM_AI_SERVICE_SECRET;
+    if (!secret || secret.length < 32) {
+      return res.status(503).json({ success: false, error: 'QuantumAI service is not configured' });
+    }
+    const expected = crypto
+      .createHmac('sha256', secret)
+      .update(`${req.user._id}:group:${groupId}:${String(contentHash).toLowerCase()}:${requestId}`)
+      .digest();
+    const received = Buffer.from(String(receipt || ''), 'hex');
+    if (received.length !== expected.length || !crypto.timingSafeEqual(received, expected)) {
+      return res.status(403).json({ success: false, error: 'Invalid QuantumAI service receipt' });
+    }
+    const actualHash = crypto.createHash('sha256').update(content, 'utf8').digest('hex');
+    if (actualHash !== String(contentHash).toLowerCase()) {
+      return res.status(403).json({ success: false, error: 'QuantumAI content hash mismatch' });
+    }
+
+    const group = await Group.findById(groupId);
+    if (!group || !group.isMember(req.user._id)) {
+      return res.status(403).json({ success: false, error: 'Not a group member' });
+    }
+    ensureAdmins(group);
+    if (!group.quantumAI?.enabled) {
+      return res.status(403).json({ success: false, error: 'QuantumAI is disabled for this group' });
+    }
+    if (group.quantumAI.invocationPolicy === 'admins' && !group.isAdmin(req.user._id)) {
+      return res.status(403).json({ success: false, error: 'Only group admins can invoke QuantumAI' });
+    }
+    const usageDay = new Date().toISOString().slice(0, 10);
+    if (group.quantumAI.usageDay !== usageDay) {
+      await Group.updateOne(
+        { _id: group._id },
+        { $set: { 'quantumAI.usageDay': usageDay, 'quantumAI.usageCount': 0 } }
+      );
+      group.quantumAI.usageDay = usageDay;
+      group.quantumAI.usageCount = 0;
+    }
+    const quantumAI = await User.findOne({ systemRole: 'quantum_ai', isSystemUser: true });
+    if (!quantumAI || !group.isMember(quantumAI._id)) {
+      return res.status(409).json({ success: false, error: 'Add QuantumAI to this group first' });
+    }
+    const memberSet = new Set(group.members.map(String));
+    const memberUsers = await User.find({ _id: { $in: [...memberSet] } }).select('_id publicKeys');
+    if (memberUsers.length !== memberSet.size || memberUsers.some((member) => !member.publicKeys?.length)) {
+      return res.status(409).json({ success: false, error: 'Every group member needs an encryption key' });
+    }
+    const normalized = memberUsers.map((member) => ({
+      user: member._id,
+      ...sealForPublicKey(content, member.publicKeys[0]),
+    }));
+    if (await Message.exists({ 'aiMetadata.requestId': requestId })) {
+      return res.status(409).json({ success: false, error: 'AI response already published' });
+    }
+
+    const reserved = await Group.findOneAndUpdate(
+      {
+        _id: group._id,
+        'quantumAI.usageCount': { $lt: group.quantumAI.dailyLimit },
+      },
+      { $inc: { 'quantumAI.usageCount': 1 } },
+      { new: true }
+    );
+    if (!reserved) {
+      return res.status(429).json({ success: false, error: 'This group reached its daily QuantumAI limit' });
+    }
+
+    const created = await Message.create({
+      from: quantumAI._id,
+      group: group._id,
+      envelopes: normalized,
+      kind: 'ai',
+      aiMetadata: {
+        contentHash: String(contentHash).toLowerCase(),
+        requestedBy: req.user._id,
+        model: typeof model === 'string' ? model.slice(0, 120) : undefined,
+        requestId,
+      },
+    });
+    const payload = toClientMessage(created);
+    emitToMembers(req.app.get('io'), [...memberSet], 'message:new', payload);
+    return res.status(201).json({ success: true, data: payload });
+  } catch (err) {
+    return res.status(err.status || 500).json({ success: false, error: err.message });
   }
 }
 

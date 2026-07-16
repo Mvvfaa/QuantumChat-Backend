@@ -1,0 +1,20 @@
+name: Backend Build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    name: Backend Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node --check server.js
+      - run: node --check src/app.js
+      - run: npm audit --omit=dev --audit-level=critical

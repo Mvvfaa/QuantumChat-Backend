@@ -57,10 +57,16 @@ const messageSchema = new mongoose.Schema(
     readAt: { type: Date },
     kind: {
       type: String,
-      enum: ['text', 'announcement', 'poll', 'event', 'file'],
+      enum: ['text', 'announcement', 'poll', 'event', 'file', 'ai', 'ai_note'],
       default: 'text',
     },
     mentionedUserIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+    aiMetadata: {
+      contentHash: { type: String, match: /^[0-9a-f]{64}$/i },
+      requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      model: { type: String, maxlength: 120 },
+      requestId: { type: String },
+    },
     pollVotes: { type: [pollVoteSchema], default: undefined },
     // Optional display metadata when this message was forwarded (plaintext was re-sealed).
     forwardedFrom: {
@@ -73,6 +79,7 @@ const messageSchema = new mongoose.Schema(
 
 messageSchema.index({ from: 1, to: 1, createdAt: 1 });
 messageSchema.index({ group: 1, createdAt: 1 });
+messageSchema.index({ 'aiMetadata.requestId': 1 }, { unique: true, sparse: true });
 
 messageSchema.pre('validate', function ensureShape(next) {
   const isGroup = Boolean(this.group);

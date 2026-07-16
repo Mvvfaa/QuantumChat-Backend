@@ -1,3 +1,16 @@
+# Security checks before a pull request
+
+Run the same attack suite used by GitHub Actions:
+
+```powershell
+npm ci
+npm test
+```
+
+The suite covers sealed-box/secretbox tampering, entropy and nonce reuse,
+JWT algorithm confusion and forgery, IDOR, NoSQL injection, upload traversal,
+mass assignment, and QuantumAI impersonation. A failure is a merge blocker.
+
 # QuantumChat — Frontend
 
 React/Vite client for QuantumChat. All encryption happens here — key generation and `nacl.box` sealing/unsealing — the backend never receives a private key or plaintext.

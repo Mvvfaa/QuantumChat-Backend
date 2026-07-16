@@ -80,7 +80,7 @@ export const storyUpload = multer({
 export function resolveUploadPath(storagePath) {
   const root = path.resolve(UPLOAD_DIR);
   const resolved = path.resolve(UPLOAD_DIR, storagePath);
-  if (!resolved.startsWith(root)) {
+  if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) {
     throw new Error('Invalid upload path');
   }
   return resolved;

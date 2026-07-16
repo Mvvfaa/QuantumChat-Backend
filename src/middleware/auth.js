@@ -9,7 +9,7 @@ export async function requireAuth(req, res, next) {
       return res.status(401).json({ success: false, error: 'Missing authorization token' });
     }
 
-    const payload = jwt.verify(token, process.env.JWT_SECRET);
+    const payload = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
     const user = await User.findById(payload.id);
     if (!user) {
       return res.status(401).json({ success: false, error: 'User not found' });
