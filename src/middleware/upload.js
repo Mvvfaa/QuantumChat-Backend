@@ -3,30 +3,87 @@ import path from 'path';
 import crypto from 'crypto';
 import fs from 'fs';
 
-// On Vercel the filesystem is read-only except /tmp, and /tmp isn't shared
-// or durable across invocations — attachments written there can vanish
-// before a later download request lands on a different container. This
-// avoids an outright crash (EROFS) but attachments are not reliable on
-// serverless deployments; a persistent deployment or object storage (S3 etc.)
-// is needed for that to actually work.
 const UPLOAD_DIR = process.env.UPLOAD_DIR || (process.env.VERCEL ? '/tmp/uploads' : 'uploads');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+fs.mkdirSync(path.join(UPLOAD_DIR, 'avatars'), { recursive: true });
+fs.mkdirSync(path.join(UPLOAD_DIR, 'stories'), { recursive: true });
+fs.mkdirSync(path.join(UPLOAD_DIR, 'groups'), { recursive: true });
 
-const storage = multer.diskStorage({
+const encStorage = multer.diskStorage({
   destination: UPLOAD_DIR,
   filename: (req, file, cb) => cb(null, `${crypto.randomUUID()}.enc`),
 });
 
-// The file bytes are already nacl.box ciphertext by the time they reach the
-// server, so a 15MB cap on the *encrypted* payload comfortably covers
-// reasonably sized attachments.
 export const upload = multer({
-  storage,
+  storage: encStorage,
   limits: { fileSize: 15 * 1024 * 1024 },
 });
 
+const avatarStorage = multer.diskStorage({
+  destination: path.join(UPLOAD_DIR, 'avatars'),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase() || '.jpg';
+    cb(null, `${crypto.randomUUID()}${ext}`);
+  },
+});
+
+export const avatarUpload = multer({
+  storage: avatarStorage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (!file.mimetype?.startsWith('image/')) {
+      return cb(new Error('Avatar must be an image'));
+    }
+    cb(null, true);
+  },
+});
+
+const groupPhotoStorage = multer.diskStorage({
+  destination: path.join(UPLOAD_DIR, 'groups'),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase() || '.jpg';
+    cb(null, `${crypto.randomUUID()}${ext}`);
+  },
+});
+
+export const groupPhotoUpload = multer({
+  storage: groupPhotoStorage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (!file.mimetype?.startsWith('image/')) {
+      return cb(new Error('Group photo must be an image'));
+    }
+    cb(null, true);
+  },
+});
+
+const storyStorage = multer.diskStorage({
+  destination: path.join(UPLOAD_DIR, 'stories'),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase() || '';
+    cb(null, `${crypto.randomUUID()}${ext}`);
+  },
+});
+
+export const storyUpload = multer({
+  storage: storyStorage,
+  limits: { fileSize: 40 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const type = file.mimetype || '';
+    if (type.startsWith('image/') || type.startsWith('video/') || type.startsWith('audio/')) {
+      return cb(null, true);
+    }
+    cb(new Error('Story must be an image, video, or audio file'));
+  },
+});
+
 export function resolveUploadPath(storagePath) {
-  return path.resolve(UPLOAD_DIR, path.basename(storagePath));
+  const root = path.resolve(UPLOAD_DIR);
+  const resolved = path.resolve(UPLOAD_DIR, storagePath);
+  if (!resolved.startsWith(root)) {
+    throw new Error('Invalid upload path');
+  }
+  return resolved;
 }
 
 export { UPLOAD_DIR };

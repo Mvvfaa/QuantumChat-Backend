@@ -6,6 +6,7 @@ import userRoutes from './routes/userRoutes.js';
 import messageRoutes from './routes/messageRoutes.js';
 import attachmentRoutes from './routes/attachmentRoutes.js';
 import groupRoutes from './routes/groupRoutes.js';
+import storyRoutes from './routes/storyRoutes.js';
 import { authLimiter } from './middleware/rateLimiter.js';
 
 export function createApp() {
@@ -37,6 +38,7 @@ export function createApp() {
   app.use('/api/messages', messageRoutes);
   app.use('/api/attachments', attachmentRoutes);
   app.use('/api/groups', groupRoutes);
+  app.use('/api/stories', storyRoutes);
 
   app.use((req, res) => {
     res.status(404).json({ success: false, error: 'Not found' });
@@ -45,6 +47,18 @@ export function createApp() {
   // eslint-disable-next-line no-unused-vars
   app.use((err, req, res, next) => {
     console.error(err);
+    if (err?.code === 'LIMIT_UNEXPECTED_FILE') {
+      return res.status(400).json({
+        success: false,
+        error: `Unexpected upload field: ${err.field || 'unknown'}`,
+      });
+    }
+    if (err?.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ success: false, error: 'File too large' });
+    }
+    if (err?.name === 'MulterError') {
+      return res.status(400).json({ success: false, error: err.message || 'Upload failed' });
+    }
     res.status(500).json({ success: false, error: 'Internal server error' });
   });
 

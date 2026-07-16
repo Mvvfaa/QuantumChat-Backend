@@ -1,0 +1,35 @@
+name: Security Attack Suite
+
+# Runs on every push and every pull request. This is a security regression
+# gate, not a feature test: it actively attacks the running app —
+# decrypting real, freshly-stored MongoDB message/attachment documents with
+# every key except the correct one (wrong accounts, wrong keys within the
+# right account, tampered ciphertext/nonce, brute-forced random keys),
+# forging/tampering JWTs, requesting other users' private conversations and
+# files, and firing NoSQL injection payloads — plus control checks proving
+# the legitimate path still works. A green check means none of those
+# attacks succeeded. A red X means one did — treat that as a critical
+# break, not a flaky test, and do not merge until it's understood.
+on:
+  push:
+  pull_request:
+
+jobs:
+  attack-the-app:
+    name: Security Attack Suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run security attack suite
+        run: npm test

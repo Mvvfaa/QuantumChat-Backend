@@ -33,6 +33,14 @@ const memberEnvelopeSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const pollVoteSchema = new mongoose.Schema(
+  {
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    optionIndex: { type: Number, required: true, min: 0 },
+  },
+  { _id: false }
+);
+
 const messageSchema = new mongoose.Schema(
   {
     from: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
@@ -43,6 +51,22 @@ const messageSchema = new mongoose.Schema(
     envelopes: { type: [memberEnvelopeSchema], default: undefined },
     attachment: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' },
     reactions: { type: [reactionSchema], default: [] },
+    replyTo: { type: mongoose.Schema.Types.ObjectId, ref: 'Message' },
+    editedAt: { type: Date },
+    deliveredAt: { type: Date },
+    readAt: { type: Date },
+    kind: {
+      type: String,
+      enum: ['text', 'announcement', 'poll', 'event', 'file'],
+      default: 'text',
+    },
+    mentionedUserIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+    pollVotes: { type: [pollVoteSchema], default: undefined },
+    // Optional display metadata when this message was forwarded (plaintext was re-sealed).
+    forwardedFrom: {
+      username: { type: String },
+      messageId: { type: mongoose.Schema.Types.ObjectId },
+    },
   },
   { timestamps: true }
 );

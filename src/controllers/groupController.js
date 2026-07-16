@@ -1,11 +1,15 @@
+import crypto from 'crypto';
+import fs from 'fs';
 import mongoose from 'mongoose';
 import Group from '../models/Group.js';
 import User from '../models/User.js';
 import Message from '../models/Message.js';
+import { resolveUploadPath } from '../middleware/upload.js';
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
 const ATTACHMENT_POPULATE =
-  'filename mimetype size nonce ephemeralPublicKey targetPublicKey forSenderNonce forSenderEphemeralPublicKey forSenderTargetPublicKey';
+  'filename mimetype size nonce ephemeralPublicKey targetPublicKey forSenderNonce forSenderEphemeralPublicKey forSenderTargetPublicKey encryption secretboxNonce group';
+const MEMBER_POPULATE = 'username email publicKeys lastLoginAt keyRotatedAt avatarPath';
 
 function validateEnvelope(envelope) {
   return (
@@ -50,6 +54,12 @@ function toClientMessage(doc) {
       user: e.user?.toString?.() || String(e.user),
     }));
   }
+  message.mentionedUserIds = (message.mentionedUserIds || []).map((id) => String(id));
+  message.pollVotes = (message.pollVotes || []).map((v) => ({
+    user: String(v.user),
+    optionIndex: v.optionIndex,
+  }));
+  message.kind = message.kind || 'text';
   return message;
 }
 
@@ -60,9 +70,23 @@ function emitToMembers(io, memberIds, event, payload) {
   }
 }
 
+async function loadGroup(id) {
+  return Group.findById(id).populate('members', MEMBER_POPULATE);
+}
+
+function ensureAdmins(group) {
+  if (!group.admins?.length) {
+    group.admins = [group.createdBy];
+  }
+}
+
+function makeInviteCode() {
+  return crypto.randomBytes(6).toString('hex');
+}
+
 export async function createGroup(req, res) {
   try {
-    const { name, memberIds } = req.body;
+    const { name, memberIds, description } = req.body;
     if (!name || typeof name !== 'string' || name.trim().length < 2) {
       return res.status(400).json({ success: false, error: 'Group name must be at least 2 characters' });
     }
@@ -86,19 +110,15 @@ export async function createGroup(req, res) {
     const members = [req.user._id, ...uniqueIds];
     const group = await Group.create({
       name: name.trim(),
+      description: typeof description === 'string' ? description.trim().slice(0, 500) : '',
       createdBy: req.user._id,
       members,
+      admins: [req.user._id],
     });
 
-    const populated = await Group.findById(group._id).populate(
-      'members',
-      'username email publicKeys lastLoginAt keyRotatedAt'
-    );
-
+    const populated = await loadGroup(group._id);
     const payload = populated.toPublicJSON();
-    const io = req.app.get('io');
-    emitToMembers(io, members, 'group:new', payload);
-
+    emitToMembers(req.app.get('io'), members, 'group:new', payload);
     res.status(201).json({ success: true, data: payload });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -109,7 +129,7 @@ export async function listGroups(req, res) {
   try {
     const groups = await Group.find({ members: req.user._id })
       .sort({ updatedAt: -1 })
-      .populate('members', 'username email publicKeys lastLoginAt keyRotatedAt');
+      .populate('members', MEMBER_POPULATE);
     res.json({ success: true, data: groups.map((g) => g.toPublicJSON()) });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -121,12 +141,9 @@ export async function getGroup(req, res) {
     if (!mongoose.isValidObjectId(req.params.id)) {
       return res.status(400).json({ success: false, error: 'Invalid group id' });
     }
-    const group = await Group.findById(req.params.id).populate(
-      'members',
-      'username email publicKeys lastLoginAt keyRotatedAt'
-    );
+    const group = await loadGroup(req.params.id);
     if (!group) return res.status(404).json({ success: false, error: 'Group not found' });
-    if (!group.members.some((m) => String(m._id || m) === req.user._id.toString())) {
+    if (!group.isMember(req.user._id)) {
       return res.status(403).json({ success: false, error: 'Not a group member' });
     }
     res.json({ success: true, data: group.toPublicJSON() });
@@ -135,18 +152,450 @@ export async function getGroup(req, res) {
   }
 }
 
+export async function previewInvite(req, res) {
+  try {
+    const code = String(req.params.code || '').trim().toLowerCase();
+    if (!code) return res.status(400).json({ success: false, error: 'Invite code required' });
+    const group = await Group.findOne({ inviteCode: code, inviteEnabled: true }).select(
+      'name description members photoPath inviteEnabled'
+    );
+    if (!group) return res.status(404).json({ success: false, error: 'Invite not found or expired' });
+    res.json({
+      success: true,
+      data: {
+        name: group.name,
+        description: group.description || '',
+        memberCount: (group.members || []).length,
+        hasPhoto: Boolean(group.photoPath),
+        code,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function joinViaInvite(req, res) {
+  try {
+    const code = String(req.body.code || req.params.code || '')
+      .trim()
+      .toLowerCase();
+    if (!code) return res.status(400).json({ success: false, error: 'Invite code required' });
+    const group = await Group.findOne({ inviteCode: code, inviteEnabled: true });
+    if (!group) return res.status(404).json({ success: false, error: 'Invite not found or expired' });
+    if (group.isMember(req.user._id)) {
+      const populated = await loadGroup(group._id);
+      return res.json({ success: true, data: populated.toPublicJSON(), alreadyMember: true });
+    }
+    group.members.push(req.user._id);
+    await group.save();
+    const populated = await loadGroup(group._id);
+    const payload = populated.toPublicJSON();
+    emitToMembers(req.app.get('io'), group.members, 'group:updated', payload);
+    emitToMembers(req.app.get('io'), [req.user._id], 'group:new', payload);
+    res.json({ success: true, data: payload });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function updateGroup(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ success: false, error: 'Invalid group id' });
+    }
+    const group = await Group.findById(id);
+    if (!group) return res.status(404).json({ success: false, error: 'Group not found' });
+    if (!group.isMember(req.user._id)) {
+      return res.status(403).json({ success: false, error: 'Not a group member' });
+    }
+    ensureAdmins(group);
+    if (!group.isAdmin(req.user._id)) {
+      return res.status(403).json({ success: false, error: 'Only admins can update group settings' });
+    }
+
+    const { name, description, onlyAdminsCanPost, onlyAdminsCanAddMembers } = req.body;
+    if (name != null) {
+      if (typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 60) {
+        return res.status(400).json({ success: false, error: 'Group name must be 2-60 characters' });
+      }
+      group.name = name.trim();
+    }
+    if (description != null) {
+      if (typeof description !== 'string' || description.length > 500) {
+        return res.status(400).json({ success: false, error: 'Description must be under 500 characters' });
+      }
+      group.description = description.trim();
+    }
+    if (typeof onlyAdminsCanPost === 'boolean') group.onlyAdminsCanPost = onlyAdminsCanPost;
+    if (typeof onlyAdminsCanAddMembers === 'boolean') group.onlyAdminsCanAddMembers = onlyAdminsCanAddMembers;
+
+    await group.save();
+    const populated = await loadGroup(group._id);
+    const payload = populated.toPublicJSON();
+    emitToMembers(req.app.get('io'), group.members, 'group:updated', payload);
+    res.json({ success: true, data: payload });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function renameGroup(req, res) {
+  req.body = { name: req.body?.name };
+  return updateGroup(req, res);
+}
+
+export async function uploadGroupPhoto(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ success: false, error: 'Invalid group id' });
+    }
+    if (!req.file) return res.status(400).json({ success: false, error: 'Photo required' });
+    const group = await Group.findById(id);
+    if (!group) {
+      fs.unlink(req.file.path, () => {});
+      return res.status(404).json({ success: false, error: 'Group not found' });
+    }
+    if (!group.isAdmin(req.user._id)) {
+      fs.unlink(req.file.path, () => {});
+      return res.status(403).json({ success: false, error: 'Only admins can change the group photo' });
+    }
+    if (group.photoPath) {
+      try {
+        fs.unlink(resolveUploadPath(group.photoPath), () => {});
+      } catch {
+        /* ignore */
+      }
+    }
+    group.photoPath = `groups/${req.file.filename}`;
+    group.photoMimeType = req.file.mimetype;
+    await group.save();
+    const populated = await loadGroup(group._id);
+    const payload = populated.toPublicJSON();
+    emitToMembers(req.app.get('io'), group.members, 'group:updated', payload);
+    res.json({ success: true, data: payload });
+  } catch (err) {
+    if (req.file?.path) fs.unlink(req.file.path, () => {});
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function getGroupPhoto(req, res) {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ success: false, error: 'Invalid group id' });
+    }
+    const group = await Group.findById(req.params.id).select('photoPath photoMimeType members');
+    if (!group?.photoPath) return res.status(404).json({ success: false, error: 'No photo' });
+    if (!group.isMember(req.user._id)) {
+      return res.status(403).json({ success: false, error: 'Not a group member' });
+    }
+    res.setHeader('Content-Type', group.photoMimeType || 'image/jpeg');
+    res.sendFile(resolveUploadPath(group.photoPath), (err) => {
+      if (err && !res.headersSent) res.status(404).json({ success: false, error: 'Photo not found' });
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function setInviteLink(req, res) {
+  try {
+    const { id } = req.params;
+    const { enabled, rotate } = req.body || {};
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ success: false, error: 'Invalid group id' });
+    }
+    const group = await Group.findById(id);
+    if (!group) return res.status(404).json({ success: false, error: 'Group not found' });
+    if (!group.isAdmin(req.user._id)) {
+      return res.status(403).json({ success: false, error: 'Only admins can manage invite links' });
+    }
+    ensureAdmins(group);
+    if (enabled === false) {
+      group.inviteEnabled = false;
+    } else {
+      group.inviteEnabled = true;
+      if (!group.inviteCode || rotate) group.inviteCode = makeInviteCode();
+    }
+    await group.save();
+    const populated = await loadGroup(group._id);
+    const payload = populated.toPublicJSON();
+    emitToMembers(req.app.get('io'), group.members, 'group:updated', payload);
+    res.json({ success: true, data: payload });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function addMembers(req, res) {
+  try {
+    const { id } = req.params;
+    const { memberIds } = req.body;
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ success: false, error: 'Invalid group id' });
+    }
+    const group = await Group.findById(id);
+    if (!group) return res.status(404).json({ success: false, error: 'Group not found' });
+    if (!group.isMember(req.user._id)) {
+      return res.status(403).json({ success: false, error: 'Not a group member' });
+    }
+    ensureAdmins(group);
+    if (group.onlyAdminsCanAddMembers !== false && !group.isAdmin(req.user._id)) {
+      return res.status(403).json({ success: false, error: 'Only admins can add members' });
+    }
+    const existing = new Set(group.members.map(String));
+    const toAdd = [...new Set((memberIds || []).map(String))].filter(
+      (mid) => !existing.has(mid) && mongoose.isValidObjectId(mid)
+    );
+    if (toAdd.length === 0) {
+      return res.status(400).json({ success: false, error: 'No new members to add' });
+    }
+    const found = await User.find({ _id: { $in: toAdd } }).select('_id');
+    if (found.length !== toAdd.length) {
+      return res.status(400).json({ success: false, error: 'One or more members were not found' });
+    }
+    group.members.push(...toAdd);
+    await group.save();
+    const populated = await loadGroup(group._id);
+    const payload = populated.toPublicJSON();
+    emitToMembers(req.app.get('io'), group.members, 'group:updated', payload);
+    for (const mid of toAdd) {
+      emitToMembers(req.app.get('io'), [mid], 'group:new', payload);
+    }
+    res.json({ success: true, data: payload });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function removeMember(req, res) {
+  try {
+    const { id, memberId } = req.params;
+    if (!mongoose.isValidObjectId(id) || !mongoose.isValidObjectId(memberId)) {
+      return res.status(400).json({ success: false, error: 'Invalid id' });
+    }
+    const group = await Group.findById(id);
+    if (!group) return res.status(404).json({ success: false, error: 'Group not found' });
+    ensureAdmins(group);
+    const isSelf = memberId === req.user._id.toString();
+    if (!isSelf && !group.isAdmin(req.user._id)) {
+      return res.status(403).json({ success: false, error: 'Only admins can remove other members' });
+    }
+    if (!isSelf && String(group.createdBy) === memberId) {
+      return res.status(403).json({ success: false, error: 'Cannot remove the group owner' });
+    }
+    const before = group.members.map(String);
+    group.members = group.members.filter((m) => m.toString() !== memberId);
+    group.admins = (group.admins || []).filter((a) => a.toString() !== memberId);
+    if (group.members.length === 0) {
+      if (group.photoPath) {
+        try {
+          fs.unlink(resolveUploadPath(group.photoPath), () => {});
+        } catch {
+          /* ignore */
+        }
+      }
+      await group.deleteOne();
+      await Message.deleteMany({ group: id });
+      emitToMembers(req.app.get('io'), before, 'group:deleted', { id });
+      return res.json({ success: true, data: { id, deleted: true } });
+    }
+    if (String(group.createdBy) === memberId) {
+      group.createdBy = group.members[0];
+      if (!group.admins.some((a) => String(a) === String(group.createdBy))) {
+        group.admins.push(group.createdBy);
+      }
+    }
+    if (!group.admins.length) group.admins = [group.createdBy];
+    await group.save();
+    const populated = await loadGroup(group._id);
+    const payload = populated.toPublicJSON();
+    emitToMembers(req.app.get('io'), before, 'group:updated', payload);
+    if (!isSelf) {
+      emitToMembers(req.app.get('io'), [memberId], 'group:deleted', { id });
+    } else {
+      emitToMembers(req.app.get('io'), [memberId], 'group:deleted', { id });
+    }
+    res.json({ success: true, data: payload });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function addAdmin(req, res) {
+  try {
+    const { id, memberId } = req.params;
+    if (!mongoose.isValidObjectId(id) || !mongoose.isValidObjectId(memberId)) {
+      return res.status(400).json({ success: false, error: 'Invalid id' });
+    }
+    const group = await Group.findById(id);
+    if (!group) return res.status(404).json({ success: false, error: 'Group not found' });
+    ensureAdmins(group);
+    if (!group.isAdmin(req.user._id)) {
+      return res.status(403).json({ success: false, error: 'Only admins can promote members' });
+    }
+    if (!group.isMember(memberId)) {
+      return res.status(400).json({ success: false, error: 'User is not a group member' });
+    }
+    if (!group.admins.some((a) => String(a) === String(memberId))) {
+      group.admins.push(memberId);
+      await group.save();
+    }
+    const populated = await loadGroup(group._id);
+    const payload = populated.toPublicJSON();
+    emitToMembers(req.app.get('io'), group.members, 'group:updated', payload);
+    res.json({ success: true, data: payload });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function removeAdmin(req, res) {
+  try {
+    const { id, memberId } = req.params;
+    if (!mongoose.isValidObjectId(id) || !mongoose.isValidObjectId(memberId)) {
+      return res.status(400).json({ success: false, error: 'Invalid id' });
+    }
+    const group = await Group.findById(id);
+    if (!group) return res.status(404).json({ success: false, error: 'Group not found' });
+    ensureAdmins(group);
+    if (String(group.createdBy) !== String(req.user._id)) {
+      return res.status(403).json({ success: false, error: 'Only the owner can demote admins' });
+    }
+    if (String(memberId) === String(group.createdBy)) {
+      return res.status(400).json({ success: false, error: 'Cannot demote the group owner' });
+    }
+    group.admins = (group.admins || []).filter((a) => String(a) !== String(memberId));
+    if (!group.admins.length) group.admins = [group.createdBy];
+    await group.save();
+    const populated = await loadGroup(group._id);
+    const payload = populated.toPublicJSON();
+    emitToMembers(req.app.get('io'), group.members, 'group:updated', payload);
+    res.json({ success: true, data: payload });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function pinMessage(req, res) {
+  try {
+    const { id, messageId } = req.params;
+    if (!mongoose.isValidObjectId(id) || !mongoose.isValidObjectId(messageId)) {
+      return res.status(400).json({ success: false, error: 'Invalid id' });
+    }
+    const group = await Group.findById(id);
+    if (!group) return res.status(404).json({ success: false, error: 'Group not found' });
+    if (!group.isMember(req.user._id)) {
+      return res.status(403).json({ success: false, error: 'Not a group member' });
+    }
+    ensureAdmins(group);
+    if (!group.isAdmin(req.user._id)) {
+      return res.status(403).json({ success: false, error: 'Only admins can pin messages' });
+    }
+    const msg = await Message.findById(messageId);
+    if (!msg || String(msg.group) !== String(id)) {
+      return res.status(404).json({ success: false, error: 'Message not found in this group' });
+    }
+    const ids = (group.pinnedMessageIds || []).map(String);
+    if (!ids.includes(String(messageId))) {
+      group.pinnedMessageIds = [messageId, ...(group.pinnedMessageIds || [])].slice(0, 20);
+      await group.save();
+    }
+    const populated = await loadGroup(group._id);
+    const payload = populated.toPublicJSON();
+    emitToMembers(req.app.get('io'), group.members, 'group:updated', payload);
+    res.json({ success: true, data: payload });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function unpinMessage(req, res) {
+  try {
+    const { id, messageId } = req.params;
+    if (!mongoose.isValidObjectId(id) || !mongoose.isValidObjectId(messageId)) {
+      return res.status(400).json({ success: false, error: 'Invalid id' });
+    }
+    const group = await Group.findById(id);
+    if (!group) return res.status(404).json({ success: false, error: 'Group not found' });
+    if (!group.isAdmin(req.user._id)) {
+      return res.status(403).json({ success: false, error: 'Only admins can unpin messages' });
+    }
+    group.pinnedMessageIds = (group.pinnedMessageIds || []).filter((mid) => String(mid) !== String(messageId));
+    await group.save();
+    const populated = await loadGroup(group._id);
+    const payload = populated.toPublicJSON();
+    emitToMembers(req.app.get('io'), group.members, 'group:updated', payload);
+    res.json({ success: true, data: payload });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function deleteGroup(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ success: false, error: 'Invalid group id' });
+    }
+    const group = await Group.findById(id);
+    if (!group) return res.status(404).json({ success: false, error: 'Group not found' });
+    if (String(group.createdBy) !== String(req.user._id)) {
+      return res.status(403).json({ success: false, error: 'Only the owner can delete the group' });
+    }
+    const members = group.members.map(String);
+    if (group.photoPath) {
+      try {
+        fs.unlink(resolveUploadPath(group.photoPath), () => {});
+      } catch {
+        /* ignore */
+      }
+    }
+    await group.deleteOne();
+    await Message.deleteMany({ group: id });
+    emitToMembers(req.app.get('io'), members, 'group:deleted', { id });
+    res.json({ success: true, data: { id, deleted: true } });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
 export async function sendGroupMessage(req, res) {
   try {
     const { groupId } = req.params;
-    const { envelopes, attachmentId } = req.body;
+    const { envelopes, attachmentId, replyTo, kind, mentionedUserIds } = req.body;
     if (!mongoose.isValidObjectId(groupId)) {
       return res.status(400).json({ success: false, error: 'Invalid group id' });
     }
 
     const group = await Group.findById(groupId);
     if (!group) return res.status(404).json({ success: false, error: 'Group not found' });
-    if (!group.members.some((m) => m.toString() === req.user._id.toString())) {
+    if (!group.isMember(req.user._id)) {
       return res.status(403).json({ success: false, error: 'Not a group member' });
+    }
+    ensureAdmins(group);
+    if (group.onlyAdminsCanPost && !group.isAdmin(req.user._id)) {
+      return res.status(403).json({ success: false, error: 'Only admins can post in this group' });
+    }
+
+    const messageKind = ['text', 'announcement', 'poll', 'event', 'file'].includes(kind) ? kind : 'text';
+    if (messageKind === 'announcement' && !group.isAdmin(req.user._id)) {
+      return res.status(403).json({ success: false, error: 'Only admins can post announcements' });
+    }
+
+    let replyToId;
+    if (replyTo) {
+      if (!mongoose.isValidObjectId(replyTo)) {
+        return res.status(400).json({ success: false, error: 'Invalid replyTo id' });
+      }
+      const parent = await Message.findById(replyTo);
+      if (!parent || String(parent.group || '') !== String(groupId)) {
+        return res.status(400).json({ success: false, error: 'Reply must be in the same group' });
+      }
+      replyToId = parent._id;
     }
 
     if (!Array.isArray(envelopes) || envelopes.length < 2) {
@@ -183,20 +632,35 @@ export async function sendGroupMessage(req, res) {
       return res.status(400).json({ success: false, error: 'Invalid attachment id' });
     }
 
+    const mentions = [...new Set((mentionedUserIds || []).map(String))].filter(
+      (mid) => memberSet.has(mid) && mongoose.isValidObjectId(mid)
+    );
+
     const created = await Message.create({
       from: req.user._id,
       group: group._id,
       envelopes: normalized,
       attachment: attachmentId || undefined,
+      replyTo: replyToId,
+      kind: messageKind,
+      mentionedUserIds: mentions,
+      pollVotes: messageKind === 'poll' ? [] : undefined,
     });
 
     group.updatedAt = new Date();
     await group.save();
 
-    const message = await Message.findById(created._id).populate('attachment', ATTACHMENT_POPULATE);
+    const message = await Message.findById(created._id)
+      .populate('attachment', ATTACHMENT_POPULATE)
+      .populate('replyTo', 'from forRecipient forSender envelopes group createdAt kind');
     const payload = toClientMessage(message);
     const io = req.app.get('io');
     emitToMembers(io, [...memberSet], 'message:new', payload);
+    for (const mid of mentions) {
+      if (mid !== String(req.user._id)) {
+        io?.to(mid).emit('mention:new', { groupId, messageId: payload.id, from: String(req.user._id) });
+      }
+    }
 
     res.status(201).json({ success: true, data: payload });
   } catch (err) {
@@ -212,130 +676,67 @@ export async function getGroupMessages(req, res) {
     }
     const group = await Group.findById(groupId);
     if (!group) return res.status(404).json({ success: false, error: 'Group not found' });
-    if (!group.members.some((m) => m.toString() === req.user._id.toString())) {
+    if (!group.isMember(req.user._id)) {
       return res.status(403).json({ success: false, error: 'Not a group member' });
     }
 
-    const messages = await Message.find({ group: groupId })
-      .sort({ createdAt: 1 })
-      .populate('attachment', ATTACHMENT_POPULATE);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 80, 1), 200);
+    const before = req.query.before ? new Date(req.query.before) : null;
+    const filter = { group: groupId };
+    if (before && !Number.isNaN(before.getTime())) {
+      filter.createdAt = { $lt: before };
+    }
 
-    res.json({ success: true, data: messages.map(toClientMessage) });
+    const rows = await Message.find(filter)
+      .sort({ createdAt: -1 })
+      .limit(limit + 1)
+      .populate('attachment', ATTACHMENT_POPULATE)
+      .populate('replyTo', 'from forRecipient forSender envelopes group createdAt kind');
+
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    page.reverse();
+
+    res.json({
+      success: true,
+      data: page.map(toClientMessage),
+      meta: {
+        hasMore,
+        nextBefore: page.length ? page[0].createdAt : null,
+      },
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 }
 
-//New functions to add members, change group name, remove members e.t.c:
-// groupController.js additions
-
-export async function renameGroup(req, res) {
+export async function votePoll(req, res) {
   try {
-    const { id } = req.params;
-    const { name } = req.body;
-    if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ success: false, error: 'Invalid group id' });
+    const { messageId } = req.params;
+    const optionIndex = Number(req.body?.optionIndex);
+    if (!mongoose.isValidObjectId(messageId) || !Number.isInteger(optionIndex) || optionIndex < 0) {
+      return res.status(400).json({ success: false, error: 'Valid messageId and optionIndex required' });
     }
-    if (!name || typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 60) {
-      return res.status(400).json({ success: false, error: 'Group name must be 2-60 characters' });
+    const message = await Message.findById(messageId);
+    if (!message?.group || message.kind !== 'poll') {
+      return res.status(404).json({ success: false, error: 'Poll not found' });
     }
-    const group = await Group.findById(id);
-    if (!group) return res.status(404).json({ success: false, error: 'Group not found' });
-    if (!group.members.some((m) => m.toString() === req.user._id.toString())) {
+    const group = await Group.findById(message.group);
+    if (!group || !group.isMember(req.user._id)) {
       return res.status(403).json({ success: false, error: 'Not a group member' });
     }
-    group.name = name.trim();
-    await group.save();
-    const populated = await group.populate('members', 'username email publicKeys lastLoginAt keyRotatedAt');
-    const payload = populated.toPublicJSON();
-    emitToMembers(req.app.get('io'), group.members, 'group:updated', payload);
+    const votes = message.pollVotes || [];
+    const existing = votes.find((v) => String(v.user) === String(req.user._id));
+    if (existing) existing.optionIndex = optionIndex;
+    else votes.push({ user: req.user._id, optionIndex });
+    message.pollVotes = votes;
+    await message.save();
+    const populated = await Message.findById(message._id)
+      .populate('attachment', ATTACHMENT_POPULATE)
+      .populate('replyTo', 'from forRecipient forSender envelopes group createdAt kind');
+    const payload = toClientMessage(populated);
+    emitToMembers(req.app.get('io'), group.members, 'message:poll', payload);
     res.json({ success: true, data: payload });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-}
-
-export async function addMembers(req, res) {
-  try {
-    const { id } = req.params;
-    const { memberIds } = req.body;
-    if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ success: false, error: 'Invalid group id' });
-    }
-    const group = await Group.findById(id);
-    if (!group) return res.status(404).json({ success: false, error: 'Group not found' });
-    if (!group.members.some((m) => m.toString() === req.user._id.toString())) {
-      return res.status(403).json({ success: false, error: 'Not a group member' });
-    }
-    const existing = new Set(group.members.map(String));
-    const toAdd = [...new Set((memberIds || []).map(String))].filter(
-      (id) => !existing.has(id) && mongoose.isValidObjectId(id)
-    );
-    if (toAdd.length === 0) {
-      return res.status(400).json({ success: false, error: 'No new members to add' });
-    }
-    const found = await User.find({ _id: { $in: toAdd } }).select('_id');
-    if (found.length !== toAdd.length) {
-      return res.status(400).json({ success: false, error: 'One or more members were not found' });
-    }
-    group.members.push(...toAdd);
-    await group.save();
-    const populated = await group.populate('members', 'username email publicKeys lastLoginAt keyRotatedAt');
-    const payload = populated.toPublicJSON();
-    emitToMembers(req.app.get('io'), group.members, 'group:updated', payload);
-    res.json({ success: true, data: payload });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-}
-
-export async function removeMember(req, res) {
-  // only createdBy can remove someone else; anyone can remove themselves (= leave)
-  try {
-    const { id, memberId } = req.params;
-    if (!mongoose.isValidObjectId(id) || !mongoose.isValidObjectId(memberId)) {
-      return res.status(400).json({ success: false, error: 'Invalid id' });
-    }
-    const group = await Group.findById(id);
-    if (!group) return res.status(404).json({ success: false, error: 'Group not found' });
-    const isSelf = memberId === req.user._id.toString();
-    const isCreator = group.createdBy.toString() === req.user._id.toString();
-    if (!isSelf && !isCreator) {
-      return res.status(403).json({ success: false, error: 'Only the creator can remove other members' });
-    }
-    const before = group.members.map(String);
-    group.members = group.members.filter((m) => m.toString() !== memberId);
-    if (group.members.length === 0) {
-      await group.deleteOne();
-      emitToMembers(req.app.get('io'), before, 'group:deleted', { id });
-      return res.json({ success: true, data: { id, deleted: true } });
-    }
-    await group.save();
-    const populated = await group.populate('members', 'username email publicKeys lastLoginAt keyRotatedAt');
-    const payload = populated.toPublicJSON();
-    emitToMembers(req.app.get('io'), before, 'group:updated', payload);
-    res.json({ success: true, data: payload });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-}
-
-export async function deleteGroup(req, res) {
-  try {
-    const { id } = req.params;
-    if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ success: false, error: 'Invalid group id' });
-    }
-    const group = await Group.findById(id);
-    if (!group) return res.status(404).json({ success: false, error: 'Group not found' });
-    if (group.createdBy.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ success: false, error: 'Only the creator can delete the group' });
-    }
-    const members = group.members.map(String);
-    await group.deleteOne();
-    await Message.deleteMany({ group: id }); // orphaned messages
-    emitToMembers(req.app.get('io'), members, 'group:deleted', { id });
-    res.json({ success: true, data: { id, deleted: true } });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
