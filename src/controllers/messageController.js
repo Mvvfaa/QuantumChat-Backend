@@ -1,9 +1,12 @@
 import fs from 'fs';
+import crypto from 'crypto';
 import mongoose from 'mongoose';
 import Message from '../models/Message.js';
 import Attachment from '../models/Attachment.js';
 import { areUsersBlocked } from './userController.js';
 import { resolveUploadPath } from '../middleware/upload.js';
+import User from '../models/User.js';
+import { sealForPublicKey } from '../utils/sealedBox.js';
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
 const ATTACHMENT_POPULATE =
@@ -118,7 +121,7 @@ async function assertReplyAllowed(req, replyToId, { to, groupId }) {
 
 export async function sendMessage(req, res) {
   try {
-    const { to, forRecipient, forSender, attachmentId, replyTo, forwardedFrom } = req.body;
+    const { to, forRecipient, forSender, attachmentId, replyTo, forwardedFrom, kind } = req.body;
     if (!to || !validateEnvelope(forRecipient) || !validateEnvelope(forSender)) {
       return res.status(400).json({
         success: false,
@@ -144,6 +147,7 @@ export async function sendMessage(req, res) {
       forSender: normalizeEnvelope(forSender),
       attachment: attachmentId || undefined,
       replyTo: replyToId,
+      kind: kind === 'ai_note' ? 'ai_note' : 'text',
       forwardedFrom:
         forwardedFrom && typeof forwardedFrom === 'object'
           ? {
@@ -167,6 +171,64 @@ export async function sendMessage(req, res) {
     res.status(201).json({ success: true, data: payload });
   } catch (err) {
     res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+}
+
+export async function publishQuantumAIDirectResponse(req, res) {
+  try {
+    const { content, contentHash, requestId, receipt, model } = req.body || {};
+    if (
+      !/^[0-9a-f]{64}$/i.test(contentHash || '') ||
+      !/^[0-9a-f-]{36}$/i.test(requestId || '') ||
+      typeof content !== 'string' ||
+      !content.trim() ||
+      content.length > 100_000
+    ) {
+      return res.status(400).json({ success: false, error: 'Invalid QuantumAI response payload' });
+    }
+    const ownKeys = (req.user.publicKeys || []).filter(Boolean);
+    if (!ownKeys.length) return res.status(409).json({ success: false, error: 'No user encryption keys available' });
+    const secret = process.env.QUANTUM_AI_SERVICE_SECRET;
+    if (!secret || secret.length < 32) {
+      return res.status(503).json({ success: false, error: 'QuantumAI service is not configured' });
+    }
+    const expected = crypto
+      .createHmac('sha256', secret)
+      .update(
+        `${req.user._id}:peer:${req.user._id}:${String(contentHash).toLowerCase()}:${requestId}`
+      )
+      .digest();
+    const received = Buffer.from(String(receipt || ''), 'hex');
+    if (received.length !== expected.length || !crypto.timingSafeEqual(received, expected)) {
+      return res.status(403).json({ success: false, error: 'Invalid QuantumAI service receipt' });
+    }
+    const actualHash = crypto.createHash('sha256').update(content, 'utf8').digest('hex');
+    if (actualHash !== String(contentHash).toLowerCase()) {
+      return res.status(403).json({ success: false, error: 'QuantumAI content hash mismatch' });
+    }
+    const quantumAI = await User.findOne({ systemRole: 'quantum_ai', isSystemUser: true });
+    if (!quantumAI) return res.status(503).json({ success: false, error: 'QuantumAI identity is unavailable' });
+
+    const created = await Message.create({
+      from: quantumAI._id,
+      to: req.user._id,
+      forRecipient: sealForPublicKey(content, ownKeys[0]),
+      forSender: sealForPublicKey(content, ownKeys[1] || ownKeys[0]),
+      kind: 'ai',
+      aiMetadata: {
+        contentHash: String(contentHash).toLowerCase(),
+        requestedBy: req.user._id,
+        model: typeof model === 'string' ? model.slice(0, 120) : undefined,
+        requestId,
+      },
+    });
+    const payload = toClientMessage(created);
+    const io = req.app.get('io');
+    io?.to(String(req.user._id)).emit('message:new', payload);
+    return res.status(201).json({ success: true, data: payload });
+  } catch (err) {
+    const status = err?.code === 11000 ? 409 : err.status || 500;
+    return res.status(status).json({ success: false, error: status === 409 ? 'AI response already published' : err.message });
   }
 }
 

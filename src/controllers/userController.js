@@ -9,7 +9,7 @@ import { resolveUploadPath } from '../middleware/upload.js';
 const HEX_64 = /^[0-9a-f]{64}$/i;
 
 const PUBLIC_FIELDS =
-  'username displayName bio phone email publicKeys keyRotatedAt lastLoginAt blockedUsers avatarPath avatarMimeType privacy emailVerified';
+  'username displayName bio phone email publicKeys keyRotatedAt lastLoginAt blockedUsers avatarPath avatarMimeType privacy emailVerified isSystemUser systemRole verified';
 
 export async function areUsersBlocked(userAId, userBId) {
   const [a, b] = await Promise.all([
@@ -117,8 +117,11 @@ export async function blockUser(req, res) {
     return res.status(400).json({ success: false, error: 'You cannot block yourself' });
   }
 
-  const target = await User.findById(id).select('_id');
+  const target = await User.findById(id).select('_id isSystemUser');
   if (!target) return res.status(404).json({ success: false, error: 'User not found' });
+  if (target.isSystemUser) {
+    return res.status(400).json({ success: false, error: 'System users cannot be blocked' });
+  }
 
   await User.updateOne({ _id: req.user._id }, { $addToSet: { blockedUsers: target._id } });
   const me = await User.findById(req.user._id);

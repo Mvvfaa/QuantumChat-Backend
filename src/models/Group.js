@@ -59,6 +59,14 @@ const groupSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    quantumAI: {
+      enabled: { type: Boolean, default: false },
+      invocationPolicy: { type: String, enum: ['members', 'admins'], default: 'members' },
+      maxContextMessages: { type: Number, min: 0, max: 20, default: 5 },
+      dailyLimit: { type: Number, min: 1, max: 1000, default: 50 },
+      usageDay: { type: String, default: '' },
+      usageCount: { type: Number, default: 0 },
+    },
   },
   { timestamps: true }
 );
@@ -96,6 +104,9 @@ groupSchema.methods.toPublicJSON = function toPublicJSON() {
           publicKeys: m.publicKeys || [],
           lastLoginAt: m.lastLoginAt,
           hasAvatar: Boolean(m.avatarPath),
+          isSystemUser: Boolean(m.isSystemUser),
+          systemRole: m.systemRole || null,
+          verified: Boolean(m.verified),
         };
       }
       return { id: m };
@@ -107,6 +118,12 @@ groupSchema.methods.toPublicJSON = function toPublicJSON() {
     pinnedMessageIds: (this.pinnedMessageIds || []).map((id) => String(id)),
     onlyAdminsCanPost: Boolean(this.onlyAdminsCanPost),
     onlyAdminsCanAddMembers: Boolean(this.onlyAdminsCanAddMembers),
+    quantumAI: {
+      enabled: Boolean(this.quantumAI?.enabled),
+      invocationPolicy: this.quantumAI?.invocationPolicy || 'members',
+      maxContextMessages: this.quantumAI?.maxContextMessages ?? 5,
+      dailyLimit: this.quantumAI?.dailyLimit ?? 50,
+    },
     createdAt: this.createdAt,
     updatedAt: this.updatedAt,
   };

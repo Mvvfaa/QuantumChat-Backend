@@ -10,9 +10,13 @@ async function main() {
 
   const app = createApp();
   const server = http.createServer(app);
+  const allowedOrigins = String(process.env.CLIENT_URL || 'http://localhost:5173')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
 
   const io = new Server(server, {
-    cors: { origin: "*" },
+    cors: { origin: allowedOrigins },
   });
   attachSocket(io);
   app.set("io", io);

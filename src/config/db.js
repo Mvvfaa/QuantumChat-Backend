@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { ensureQuantumAIUser } from '../services/quantumAIUser.js';
 
 // Serverless platforms (Vercel) reuse warm containers across invocations and
 // call this on every request — cache the connection promise so we don't
@@ -22,7 +23,10 @@ export function connectDB() {
     const uri = buildMongoUri();
     connectionPromise = mongoose
       .connect(uri)
-      .then(() => console.log(`MongoDB connected: ${mongoose.connection.host}/${mongoose.connection.name}`))
+      .then(async () => {
+        await ensureQuantumAIUser();
+        console.log(`MongoDB connected: ${mongoose.connection.host}/${mongoose.connection.name}`);
+      })
       .catch((err) => {
         connectionPromise = undefined; // allow retry on next invocation
         throw err;

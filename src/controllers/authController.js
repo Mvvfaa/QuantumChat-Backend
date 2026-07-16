@@ -16,12 +16,17 @@ function hashToken(token) {
 export async function register(req, res) {
   try {
     const { username, email, password, publicKeys, displayName } = req.body;
+    const normalizedUsername = String(username || '').trim();
+    const normalizedEmail = String(email || '').trim().toLowerCase();
 
     if (!username || !email || !password || !publicKeys) {
       return res.status(400).json({
         success: false,
         error: 'username, email, password and publicKeys are all required',
       });
+    }
+    if (normalizedUsername.toLowerCase() === 'quantumai' || normalizedEmail === 'quantumai@system.quantumchat') {
+      return res.status(409).json({ success: false, error: 'QuantumAI is a reserved system identity' });
     }
     if (password.length < 8) {
       return res.status(400).json({ success: false, error: 'Password must be at least 8 characters' });
@@ -33,14 +38,16 @@ export async function register(req, res) {
       });
     }
 
-    const existing = await User.findOne({ $or: [{ email: email.toLowerCase() }, { username }] });
+    const existing = await User.findOne({
+      $or: [{ email: normalizedEmail }, { username: { $regex: new RegExp(`^${normalizedUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } }],
+    });
     if (existing) {
       return res.status(409).json({ success: false, error: 'Username or email already in use' });
     }
 
     const user = new User({
-      username,
-      email,
+      username: normalizedUsername,
+      email: normalizedEmail,
       password,
       displayName: typeof displayName === 'string' ? displayName.trim().slice(0, 60) : '',
       publicKeys: publicKeys.map((k) => k.toLowerCase()),
@@ -75,7 +82,7 @@ export async function login(req, res) {
     }
 
     const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
-    if (!user || !(await user.comparePassword(password))) {
+    if (!user || user.isSystemUser || !user.password || !(await user.comparePassword(password))) {
       return res.status(401).json({ success: false, error: 'Invalid email or password' });
     }
 
@@ -130,7 +137,7 @@ export async function forgotPassword(req, res) {
     if (!email) return res.status(400).json({ success: false, error: 'email is required' });
 
     const user = await User.findOne({ email });
-    if (!user) return res.json(generic);
+    if (!user || user.isSystemUser) return res.json(generic);
 
     const resetToken = user.createPasswordResetToken();
     await user.save({ validateBeforeSave: false });

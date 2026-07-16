@@ -1,0 +1,22 @@
+name: Auth Abuse
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  auth-abuse:
+    name: Auth Abuse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/mongodb-binaries
+          key: mongodb-7.0.24-${{ runner.os }}
+      - run: npm ci
+      - run: node --test --test-concurrency=1 test/security/auth-abuse.test.js

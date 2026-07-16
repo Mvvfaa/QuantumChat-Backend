@@ -57,8 +57,26 @@ const userSchema = new mongoose.Schema(
     emailVerifyExpires: { type: Date, select: false },
     password: {
       type: String,
-      required: true,
+      required() {
+        return !this.isSystemUser;
+      },
       select: false,
+    },
+    isSystemUser: {
+      type: Boolean,
+      default: false,
+      immutable: true,
+      index: true,
+    },
+    systemRole: {
+      type: String,
+      enum: ['quantum_ai'],
+      immutable: true,
+    },
+    verified: {
+      type: Boolean,
+      default: false,
+      immutable: true,
     },
     passwordResetToken: { type: String, select: false },
     passwordResetExpires: { type: Date, select: false },
@@ -101,6 +119,7 @@ const userSchema = new mongoose.Schema(
 
 userSchema.pre('save', async function hashPassword(next) {
   if (!this.isModified('password')) return next();
+  if (!this.password) return next();
   this.password = await bcrypt.hash(this.password, 10);
   next();
 });
@@ -146,6 +165,9 @@ userSchema.methods.toPublicJSON = function toPublicJSON() {
       online: privacy.online || 'everyone',
       readReceipts: privacy.readReceipts !== false,
     },
+    isSystemUser: Boolean(this.isSystemUser),
+    systemRole: this.systemRole || null,
+    verified: Boolean(this.verified),
   };
 };
 

@@ -22,6 +22,7 @@ import {
   pinMessage,
   unpinMessage,
   votePoll,
+  publishQuantumAIGroupResponse,
 } from '../controllers/groupController.js';
 
 const router = Router();
@@ -56,6 +57,7 @@ router.delete('/:id/pins/:messageId', unpinMessage);
 
 router.get('/:groupId/messages', getGroupMessages);
 router.post('/:groupId/messages', sendGroupMessage);
+router.post('/:groupId/quantum-ai-response', publishQuantumAIGroupResponse);
 
 router.post('/messages/:messageId/poll-vote', votePoll);
 
