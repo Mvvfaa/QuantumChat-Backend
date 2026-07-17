@@ -3,6 +3,7 @@
 Configure repository branch protection to require:
 
 - Security Attack Suite
+- E2E Ciphertext Confidentiality (must not decode)
 - Crypto Algorithms
 - Auth Abuse
 - Backend Build

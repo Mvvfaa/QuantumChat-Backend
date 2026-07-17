@@ -1,0 +1,35 @@
+name: E2E Ciphertext Confidentiality
+
+# Creates 5 temporary users, has them exchange sealed DMs, then attacks
+# those conversations from Mongo/API/JWT/public-key perspectives.
+# Green = CI could NOT decode plaintext without the intended private keys.
+# Red X = plaintext recovered — do not merge (encryption regression).
+on:
+  push:
+  pull_request:
+
+jobs:
+  e2e-ciphertext:
+    name: E2E Ciphertext Confidentiality (must not decode)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Cache MongoDB test binary
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/mongodb-binaries
+          key: mongodb-7.0.24-${{ runner.os }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run E2E ciphertext confidentiality suite
+        run: npm run test:e2e-crypto

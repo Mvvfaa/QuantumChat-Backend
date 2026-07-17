@@ -7,7 +7,8 @@
   "scripts": {
     "dev": "nodemon server.js",
     "start": "node server.js",
-    "test": "node --test --test-concurrency=1"
+    "test": "node --test --test-concurrency=1",
+    "test:e2e-crypto": "node --test --test-concurrency=1 test/security/e2e-ciphertext-confidentiality.test.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
