@@ -32,6 +32,7 @@ src/
   controllers/
     authController.js           # register (creates the 5-key pool once), login (auth only, doesn't touch keys)
     userController.js            # listUsers, getUser, updatePublicKeys (manual device-recovery only)
+    groupController.js            #validateEnvelope,normalizeEnvelope,toClientMessage,createGroup,listGroups e.t.c
     messageController.js          # sendMessage (validates both envelopes), getConversation
     attachmentController.js        # uploadAttachment (multer), downloadAttachment (sender/recipient only)
   routes/                          # one file per resource, mounted under /api/<resource> in app.js
