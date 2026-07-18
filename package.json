@@ -7,9 +7,9 @@
   "scripts": {
     "dev": "nodemon server.js",
     "start": "node server.js",
-    "test": "node --test --test-concurrency=1",
+    "test": "node --test --test-concurrency=1 \"test/security/**/*.test.js\"",
     "test:e2e-crypto": "node --test --test-concurrency=1 test/security/e2e-ciphertext-confidentiality.test.js",
-    "test:security": "node --test --test-concurrency=1 test/security/",
+    "test:security": "node --test --test-concurrency=1 \"test/security/**/*.test.js\"",
     "test:security:crypto": "node --test --test-concurrency=1 test/security/e2e-ciphertext-confidentiality.test.js test/security/e2e-group-ciphertext.test.js test/security/crypto-algorithms.test.js test/security/randomness-integrity.test.js test/security/crypto-fuzz.test.js",
     "test:security:auth": "node --test --test-concurrency=1 test/security/auth-abuse.test.js test/security/auth-rate-limit.test.js",
     "test:security:api": "node --test --test-concurrency=1 test/security/api-vuln-detection.test.js test/security/server-attack-surface.test.js test/security/input-hardening.test.js",
