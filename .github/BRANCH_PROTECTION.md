@@ -16,7 +16,7 @@ Configure repository branch protection to require:
 
 ## Supply chain (required)
 
-- Dependency Review *(pull requests only)*
+- Dependency Review *(pull requests — npm audit high+)*
 - Gitleaks
 
 ## Legacy / umbrella (recommended)
@@ -32,3 +32,9 @@ Require the branch to be up to date and disable administrator bypass.
 - Deep Fuzz and Stress (`security-nightly.yml`)
 - OpenSSF Scorecard (`ossf-scorecard.yml`)
 - SBOM (`sbom.yml`)
+
+## External checks (not controlled by this repo)
+
+- **Vercel** — “Authorization required to deploy” needs a team admin to open the
+  Vercel authorize link on the PR (or reconnect the GitHub integration). It is not
+  a backend code or security-suite failure.

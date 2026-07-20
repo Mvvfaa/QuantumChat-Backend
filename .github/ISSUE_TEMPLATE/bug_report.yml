@@ -1,0 +1,42 @@
+name: Bug report
+description: Report a backend defect
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What went wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Environment
+      description: Node version, OS, deployment (local / Vercel / other)
+    validations:
+      required: false
+  - type: checkboxes
+    id: security
+    attributes:
+      label: Security
+      options:
+        - label: This is not a security vulnerability (I would use private advisory reporting if it were)
+          required: true

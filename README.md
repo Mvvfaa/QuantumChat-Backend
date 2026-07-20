@@ -98,3 +98,11 @@ See `.github/BRANCH_PROTECTION.md` for required checks.
 ## Deploying to Vercel
 
 Deploy this repo directly with **Root Directory left blank**. Required env vars: `MONGODB_URI`, `JWT_SECRET`.
+
+## Community
+
+- [Contributing](CONTRIBUTING.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [Security Policy](SECURITY.md)
+- [Support](SUPPORT.md)
+- [License (MIT)](LICENSE)
