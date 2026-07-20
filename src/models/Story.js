@@ -14,6 +14,10 @@ const storySchema = new mongoose.Schema(
     durationMs: { type: Number, default: 0, max: MAX_DURATION_MS },
     caption: { type: String, maxlength: 200, default: '' },
     expiresAt: { type: Date, required: true, index: true },
+    sealed: { type: Boolean, default: false },
+    envelopeNonce: { type: String, default: undefined },
+    envelopeEphemeralPublicKey: { type: String, default: undefined },
+    envelopeTargetHint: { type: String, default: undefined },
   },
   { timestamps: true }
 );
@@ -33,6 +37,10 @@ storySchema.methods.toPublicJSON = function toPublicJSON() {
     caption: this.caption || '',
     createdAt: this.createdAt,
     expiresAt: this.expiresAt,
+    sealed: Boolean(this.sealed),
+    envelopeNonce: this.envelopeNonce || undefined,
+    envelopeEphemeralPublicKey: this.envelopeEphemeralPublicKey || undefined,
+    envelopeTargetHint: this.envelopeTargetHint || undefined,
   };
 };
 

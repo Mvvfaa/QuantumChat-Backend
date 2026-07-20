@@ -80,6 +80,8 @@ const userSchema = new mongoose.Schema(
     },
     passwordResetToken: { type: String, select: false },
     passwordResetExpires: { type: Date, select: false },
+    totpSecret: { type: String, select: false },
+    totpEnabled: { type: Boolean, default: false },
     publicKeys: {
       type: [String],
       required: true,
@@ -179,6 +181,7 @@ userSchema.methods.toSelfJSON = function toSelfJSON() {
     emailVerified: Boolean(this.emailVerified),
     lastLoginAt: this.lastLoginAt,
     blockedUsers: Array.isArray(this.blockedUsers) ? this.blockedUsers.map((id) => String(id)) : [],
+    totpEnabled: Boolean(this.totpEnabled),
   };
 };
 

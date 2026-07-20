@@ -70,7 +70,12 @@ export const storyUpload = multer({
   limits: { fileSize: 40 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const type = file.mimetype || '';
-    if (type.startsWith('image/') || type.startsWith('video/') || type.startsWith('audio/')) {
+    if (
+      type.startsWith('image/') ||
+      type.startsWith('video/') ||
+      type.startsWith('audio/') ||
+      type === 'application/octet-stream'
+    ) {
       return cb(null, true);
     }
     cb(new Error('Story must be an image, video, or audio file'));

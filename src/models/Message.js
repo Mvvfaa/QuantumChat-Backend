@@ -73,6 +73,12 @@ const messageSchema = new mongoose.Schema(
       username: { type: String },
       messageId: { type: mongoose.Schema.Types.ObjectId },
     },
+    // Capability token: whether recipients may forward this message further.
+    forwardPolicy: {
+      allowForward: { type: Boolean, default: true },
+      forwardUntil: { type: Date, default: null },
+    },
+    expiresAt: { type: Date, default: null, index: true },
   },
   { timestamps: true }
 );
@@ -80,6 +86,7 @@ const messageSchema = new mongoose.Schema(
 messageSchema.index({ from: 1, to: 1, createdAt: 1 });
 messageSchema.index({ group: 1, createdAt: 1 });
 messageSchema.index({ 'aiMetadata.requestId': 1 }, { unique: true, sparse: true });
+messageSchema.index({ expiresAt: 1 }, { sparse: true });
 
 messageSchema.pre('validate', function ensureShape(next) {
   const isGroup = Boolean(this.group);

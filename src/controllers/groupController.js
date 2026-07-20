@@ -6,6 +6,11 @@ import User from '../models/User.js';
 import Message from '../models/Message.js';
 import { resolveUploadPath } from '../middleware/upload.js';
 import { sealForPublicKey } from '../utils/sealedBox.js';
+import { isUserOnline } from '../socket/index.js';
+import { notifyUser } from '../services/pushService.js';
+import { incrementCiphertextsRelayed } from '../services/blindnessStats.js';
+import { resolveExpiresAt, notExpiredFilter } from '../utils/messageExpiry.js';
+import { toObjectId } from '../utils/toObjectId.js';
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
 const ATTACHMENT_POPULATE =
@@ -583,7 +588,8 @@ export async function deleteGroup(req, res) {
 export async function sendGroupMessage(req, res) {
   try {
     const { groupId } = req.params;
-    const { envelopes, attachmentId, replyTo, kind, mentionedUserIds } = req.body;
+    const { envelopes, attachmentId, replyTo, kind, mentionedUserIds, expiresInSeconds, forwardPolicy: forwardPolicyRaw } =
+      req.body;
     if (!mongoose.isValidObjectId(groupId)) {
       return res.status(400).json({ success: false, error: 'Invalid group id' });
     }
@@ -605,12 +611,21 @@ export async function sendGroupMessage(req, res) {
       return res.status(403).json({ success: false, error: 'Only admins can post announcements' });
     }
 
+    const expiresAt = resolveExpiresAt(expiresInSeconds);
+    if (expiresAt === null) {
+      return res.status(400).json({
+        success: false,
+        error: 'expiresInSeconds must be one of 30, 300, 3600, 86400, 604800',
+      });
+    }
+
     let replyToId;
     if (replyTo) {
-      if (!mongoose.isValidObjectId(replyTo)) {
+      const replyOid = toObjectId(replyTo);
+      if (!replyOid) {
         return res.status(400).json({ success: false, error: 'Invalid replyTo id' });
       }
-      const parent = await Message.findById(replyTo);
+      const parent = await Message.findById(replyOid);
       if (!parent || String(parent.group || '') !== String(groupId)) {
         return res.status(400).json({ success: false, error: 'Reply must be in the same group' });
       }
@@ -655,6 +670,23 @@ export async function sendGroupMessage(req, res) {
       (mid) => memberSet.has(mid) && mongoose.isValidObjectId(mid)
     );
 
+    let forwardPolicy;
+    if (forwardPolicyRaw != null && typeof forwardPolicyRaw === 'object') {
+      const allowForward = forwardPolicyRaw.allowForward !== false;
+      let forwardUntil;
+      if (forwardPolicyRaw.forwardUntil != null && forwardPolicyRaw.forwardUntil !== '') {
+        const d = new Date(forwardPolicyRaw.forwardUntil);
+        if (Number.isNaN(d.getTime())) {
+          return res.status(400).json({
+            success: false,
+            error: 'forwardPolicy.forwardUntil must be a valid date',
+          });
+        }
+        forwardUntil = d;
+      }
+      forwardPolicy = { allowForward, ...(forwardUntil ? { forwardUntil } : {}) };
+    }
+
     const created = await Message.create({
       from: req.user._id,
       group: group._id,
@@ -664,6 +696,8 @@ export async function sendGroupMessage(req, res) {
       kind: messageKind,
       mentionedUserIds: mentions,
       pollVotes: messageKind === 'poll' ? [] : undefined,
+      expiresAt: expiresAt || undefined,
+      ...(forwardPolicy ? { forwardPolicy } : {}),
     });
 
     group.updatedAt = new Date();
@@ -681,6 +715,15 @@ export async function sendGroupMessage(req, res) {
       }
     }
 
+    const senderId = String(req.user._id);
+    for (const mid of memberSet) {
+      if (mid === senderId) continue;
+      if (!isUserOnline(mid)) {
+        notifyUser(mid, { title: 'QuantumChat', body: 'New group message' }).catch(() => {});
+      }
+    }
+
+    incrementCiphertextsRelayed();
     res.status(201).json({ success: true, data: payload });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -790,10 +833,11 @@ export async function publishQuantumAIGroupResponse(req, res) {
 export async function getGroupMessages(req, res) {
   try {
     const { groupId } = req.params;
-    if (!mongoose.isValidObjectId(groupId)) {
+    const groupOid = toObjectId(groupId);
+    if (!groupOid) {
       return res.status(400).json({ success: false, error: 'Invalid group id' });
     }
-    const group = await Group.findById(groupId);
+    const group = await Group.findById(groupOid);
     if (!group) return res.status(404).json({ success: false, error: 'Group not found' });
     if (!group.isMember(req.user._id)) {
       return res.status(403).json({ success: false, error: 'Not a group member' });
@@ -801,9 +845,11 @@ export async function getGroupMessages(req, res) {
 
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 80, 1), 200);
     const before = req.query.before ? new Date(req.query.before) : null;
-    const filter = { group: groupId };
+    const filter = {
+      $and: [{ group: groupOid }, notExpiredFilter()],
+    };
     if (before && !Number.isNaN(before.getTime())) {
-      filter.createdAt = { $lt: before };
+      filter.$and.push({ createdAt: { $lt: before } });
     }
 
     const rows = await Message.find(filter)

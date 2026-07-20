@@ -6,7 +6,13 @@ import Attachment from '../models/Attachment.js';
 import { areUsersBlocked } from './userController.js';
 import { resolveUploadPath } from '../middleware/upload.js';
 import User from '../models/User.js';
+import Group from '../models/Group.js';
 import { sealForPublicKey } from '../utils/sealedBox.js';
+import { isUserOnline } from '../socket/index.js';
+import { notifyUser } from '../services/pushService.js';
+import { incrementCiphertextsRelayed } from '../services/blindnessStats.js';
+import { resolveExpiresAt, notExpiredFilter } from '../utils/messageExpiry.js';
+import { toObjectId } from '../utils/toObjectId.js';
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
 const ATTACHMENT_POPULATE =
@@ -90,12 +96,13 @@ async function removeAttachmentFiles(attachmentId) {
 
 async function assertReplyAllowed(req, replyToId, { to, groupId }) {
   if (!replyToId) return undefined;
-  if (!mongoose.isValidObjectId(replyToId)) {
+  const replyOid = toObjectId(replyToId);
+  if (!replyOid) {
     const err = new Error('Invalid replyTo id');
     err.status = 400;
     throw err;
   }
-  const parent = await Message.findById(replyToId);
+  const parent = await Message.findById(replyOid);
   if (!parent) {
     const err = new Error('Reply target not found');
     err.status = 404;
@@ -119,9 +126,131 @@ async function assertReplyAllowed(req, replyToId, { to, groupId }) {
   return parent._id;
 }
 
+function parseForwardPolicy(raw) {
+  if (raw == null || typeof raw !== 'object') return undefined;
+  const allowForward = raw.allowForward !== false;
+  let forwardUntil;
+  if (raw.forwardUntil != null && raw.forwardUntil !== '') {
+    const d = new Date(raw.forwardUntil);
+    if (Number.isNaN(d.getTime())) {
+      const err = new Error('forwardPolicy.forwardUntil must be a valid date');
+      err.status = 400;
+      throw err;
+    }
+    forwardUntil = d;
+  }
+  return {
+    allowForward,
+    ...(forwardUntil ? { forwardUntil } : {}),
+  };
+}
+
+function evaluateForwardPolicy(original) {
+  if (!original) {
+    return { allowed: false, reason: 'Original message not found' };
+  }
+  const policy = original.forwardPolicy || {};
+  if (policy.allowForward === false) {
+    return { allowed: false, reason: 'Sender disabled forwarding for this message' };
+  }
+  if (policy.forwardUntil) {
+    const until = new Date(policy.forwardUntil);
+    if (!Number.isNaN(until.getTime()) && until.getTime() < Date.now()) {
+      return { allowed: false, reason: 'Forwarding window for this message has expired' };
+    }
+  }
+  return { allowed: true };
+}
+
+function userCanAccessMessage(userId, message) {
+  const uid = String(userId);
+  if (message.group) return null; // caller must check group membership async
+  return String(message.from) === uid || String(message.to) === uid;
+}
+
+async function userCanAccessMessageAsync(userId, message) {
+  if (!message.group) return userCanAccessMessage(userId, message);
+  const group = await Group.findById(message.group).select('members');
+  if (!group) return false;
+  return group.members.some((m) => String(m) === String(userId));
+}
+
+/**
+ * When forwarding, load the original and enforce its forwardPolicy.
+ * @returns {Promise<{ username?: string, messageId?: * }|undefined>}
+ */
+async function assertForwardAllowed(req, forwardedFrom) {
+  if (!forwardedFrom || typeof forwardedFrom !== 'object') return undefined;
+  const messageId = forwardedFrom.messageId;
+  const messageOid = toObjectId(messageId);
+  const meta = {
+    username: String(forwardedFrom.username || '').slice(0, 64) || undefined,
+    messageId: messageOid || undefined,
+  };
+  if (!meta.messageId) return meta;
+
+  const original = await Message.findById(messageOid);
+  if (!original) {
+    const err = new Error('Original message not found');
+    err.status = 404;
+    throw err;
+  }
+  const canAccess = await userCanAccessMessageAsync(req.user._id, original);
+  if (!canAccess) {
+    const err = new Error('Not allowed to forward this message');
+    err.status = 403;
+    throw err;
+  }
+  const verdict = evaluateForwardPolicy(original);
+  if (!verdict.allowed) {
+    const err = new Error(verdict.reason || 'Forwarding not allowed');
+    err.status = 403;
+    throw err;
+  }
+  return meta;
+}
+
+export async function checkForwardAllowed(req, res) {
+  try {
+    const { messageId } = req.params;
+    const messageOid = toObjectId(messageId);
+    if (!messageOid) {
+      return res.status(400).json({ success: false, error: 'Invalid message id' });
+    }
+    const original = await Message.findById(messageOid);
+    if (!original) {
+      return res.status(404).json({
+        success: false,
+        data: { allowed: false, reason: 'Original message not found' },
+      });
+    }
+    const canAccess = await userCanAccessMessageAsync(req.user._id, original);
+    if (!canAccess) {
+      return res.status(403).json({
+        success: false,
+        data: { allowed: false, reason: 'Not allowed to forward this message' },
+      });
+    }
+    const verdict = evaluateForwardPolicy(original);
+    return res.json({ success: true, data: verdict });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+}
+
 export async function sendMessage(req, res) {
   try {
-    const { to, forRecipient, forSender, attachmentId, replyTo, forwardedFrom, kind } = req.body;
+    const {
+      to,
+      forRecipient,
+      forSender,
+      attachmentId,
+      replyTo,
+      forwardedFrom,
+      kind,
+      expiresInSeconds,
+      forwardPolicy: forwardPolicyRaw,
+    } = req.body;
     if (!to || !validateEnvelope(forRecipient) || !validateEnvelope(forSender)) {
       return res.status(400).json({
         success: false,
@@ -138,7 +267,17 @@ export async function sendMessage(req, res) {
       return res.status(403).json({ success: false, error: 'Cannot message a blocked user' });
     }
 
+    const expiresAt = resolveExpiresAt(expiresInSeconds);
+    if (expiresAt === null) {
+      return res.status(400).json({
+        success: false,
+        error: 'expiresInSeconds must be one of 30, 300, 3600, 86400, 604800',
+      });
+    }
+
     const replyToId = await assertReplyAllowed(req, replyTo, { to });
+    const forwardMeta = await assertForwardAllowed(req, forwardedFrom);
+    const forwardPolicy = parseForwardPolicy(forwardPolicyRaw);
 
     const created = await Message.create({
       from: req.user._id,
@@ -148,15 +287,9 @@ export async function sendMessage(req, res) {
       attachment: attachmentId || undefined,
       replyTo: replyToId,
       kind: kind === 'ai_note' ? 'ai_note' : 'text',
-      forwardedFrom:
-        forwardedFrom && typeof forwardedFrom === 'object'
-          ? {
-              username: String(forwardedFrom.username || '').slice(0, 64) || undefined,
-              messageId: mongoose.isValidObjectId(forwardedFrom.messageId)
-                ? forwardedFrom.messageId
-                : undefined,
-            }
-          : undefined,
+      expiresAt: expiresAt || undefined,
+      forwardedFrom: forwardMeta,
+      ...(forwardPolicy ? { forwardPolicy } : {}),
     });
 
     const message = await Message.findById(created._id)
@@ -168,6 +301,11 @@ export async function sendMessage(req, res) {
     if (io) io.to(to.toString()).emit('message:new', payload);
     if (io) io.to(req.user._id.toString()).emit('message:new', payload);
 
+    if (!isUserOnline(to)) {
+      notifyUser(to, { title: 'QuantumChat', body: 'New message' }).catch(() => {});
+    }
+
+    incrementCiphertextsRelayed();
     res.status(201).json({ success: true, data: payload });
   } catch (err) {
     res.status(err.status || 500).json({ success: false, error: err.message });
@@ -235,7 +373,8 @@ export async function publishQuantumAIDirectResponse(req, res) {
 export async function getConversation(req, res) {
   try {
     const { userId } = req.params;
-    if (!mongoose.isValidObjectId(userId)) {
+    const peerOid = toObjectId(userId);
+    if (!peerOid) {
       return res.status(400).json({ success: false, error: 'Invalid user id' });
     }
 
@@ -244,13 +383,18 @@ export async function getConversation(req, res) {
     const markRead = req.query.markRead !== '0';
 
     const filter = {
-      $or: [
-        { from: req.user._id, to: userId },
-        { from: userId, to: req.user._id },
+      $and: [
+        {
+          $or: [
+            { from: req.user._id, to: peerOid },
+            { from: peerOid, to: req.user._id },
+          ],
+        },
+        notExpiredFilter(),
       ],
     };
     if (before && !Number.isNaN(before.getTime())) {
-      filter.createdAt = { $lt: before };
+      filter.$and.push({ createdAt: { $lt: before } });
     }
 
     const rows = await Message.find(filter)

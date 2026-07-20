@@ -1,7 +1,9 @@
 import crypto from 'crypto';
 import User, { KEY_SET_SIZE } from '../models/User.js';
-import { generateToken } from '../utils/generateToken.js';
+import { generateToken, generate2faTempToken, verifyToken } from '../utils/generateToken.js';
 import { appBaseUrl, sendAppMail, shouldExposeEmailLinks } from '../utils/mail.js';
+import { registerSession } from './sessionController.js';
+import { generateTotpSecret, buildOtpauthUrl, verifyTotp } from '../utils/totp.js';
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
 
@@ -11,6 +13,18 @@ function validateKeySet(publicKeys) {
 
 function hashToken(token) {
   return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+async function issueSession(user, req, { deviceLabel } = {}) {
+  user.lastLoginAt = new Date();
+  await User.updateOne({ _id: user._id }, { $set: { lastLoginAt: user.lastLoginAt } });
+  const deviceSession = await registerSession(user._id, req, { deviceLabel });
+  const token = generateToken(user._id);
+  return {
+    token,
+    user: user.toSelfJSON(),
+    sessionId: deviceSession.sessionId,
+  };
 }
 
 export async function register(req, res) {
@@ -54,10 +68,10 @@ export async function register(req, res) {
       lastLoginAt: new Date(),
       emailVerified: false,
     });
-    const verifyToken = user.createEmailVerifyToken();
+    const verifyTokenRaw = user.createEmailVerifyToken();
     await user.save();
 
-    const verifyUrl = `${appBaseUrl()}/verify-email?token=${verifyToken}`;
+    const verifyUrl = `${appBaseUrl()}/verify-email?token=${verifyTokenRaw}`;
     await sendAppMail({
       to: user.email,
       subject: 'Verify your QuantumChat email',
@@ -76,23 +90,136 @@ export async function register(req, res) {
 
 export async function login(req, res) {
   try {
-    const { email, password } = req.body;
+    const { email, password, deviceLabel } = req.body;
     if (!email || !password) {
       return res.status(400).json({ success: false, error: 'email and password are required' });
     }
 
-    const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
+    const user = await User.findOne({ email: email.toLowerCase() }).select('+password +totpSecret');
     if (!user || user.isSystemUser || !user.password || !(await user.comparePassword(password))) {
       return res.status(401).json({ success: false, error: 'Invalid email or password' });
     }
 
-    user.lastLoginAt = new Date();
-    await User.updateOne({ _id: user._id }, { $set: { lastLoginAt: user.lastLoginAt } });
+    if (user.totpEnabled) {
+      const tempToken = generate2faTempToken(user._id);
+      return res.json({
+        success: true,
+        data: {
+          requires2fa: true,
+          tempToken,
+        },
+      });
+    }
 
-    const token = generateToken(user._id);
-    res.json({ success: true, data: { token, user: user.toSelfJSON() } });
+    const session = await issueSession(user, req, { deviceLabel });
+    res.json({ success: true, data: session });
   } catch (err) {
     console.error('login failed:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function setup2fa(req, res) {
+  try {
+    const user = await User.findById(req.user._id).select('+totpSecret');
+    if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+    if (user.totpEnabled) {
+      return res.status(400).json({ success: false, error: '2FA is already enabled' });
+    }
+
+    const secret = generateTotpSecret();
+    user.totpSecret = secret;
+    await user.save({ validateBeforeSave: false });
+
+    const otpauthUrl = buildOtpauthUrl({ secret, email: user.email });
+    res.json({ success: true, data: { otpauthUrl, secret } });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function enable2fa(req, res) {
+  try {
+    const token = String(req.body?.token || '').trim();
+    if (!token) return res.status(400).json({ success: false, error: 'token is required' });
+
+    const user = await User.findById(req.user._id).select('+totpSecret');
+    if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+    if (user.totpEnabled) {
+      return res.status(400).json({ success: false, error: '2FA is already enabled' });
+    }
+    if (!user.totpSecret) {
+      return res.status(400).json({ success: false, error: 'Run 2FA setup first' });
+    }
+    if (!verifyTotp(user.totpSecret, token)) {
+      return res.status(401).json({ success: false, error: 'Invalid authenticator code' });
+    }
+
+    user.totpEnabled = true;
+    await user.save({ validateBeforeSave: false });
+    res.json({ success: true, data: { user: user.toSelfJSON(), message: '2FA enabled' } });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function disable2fa(req, res) {
+  try {
+    const { password, token } = req.body || {};
+    if (!password || !token) {
+      return res.status(400).json({ success: false, error: 'password and token are required' });
+    }
+
+    const user = await User.findById(req.user._id).select('+password +totpSecret');
+    if (!user || !(await user.comparePassword(password))) {
+      return res.status(401).json({ success: false, error: 'Invalid password' });
+    }
+    if (!user.totpEnabled) {
+      return res.status(400).json({ success: false, error: '2FA is not enabled' });
+    }
+    if (!verifyTotp(user.totpSecret, token)) {
+      return res.status(401).json({ success: false, error: 'Invalid authenticator code' });
+    }
+
+    await User.updateOne(
+      { _id: user._id },
+      { $set: { totpEnabled: false }, $unset: { totpSecret: 1 } }
+    );
+    const refreshed = await User.findById(user._id);
+    res.json({ success: true, data: { user: refreshed.toSelfJSON(), message: '2FA disabled' } });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function verify2fa(req, res) {
+  try {
+    const { tempToken, token, deviceLabel } = req.body || {};
+    if (!tempToken || !token) {
+      return res.status(400).json({ success: false, error: 'tempToken and token are required' });
+    }
+
+    let payload;
+    try {
+      payload = verifyToken(String(tempToken));
+    } catch {
+      return res.status(401).json({ success: false, error: 'Invalid or expired 2FA session' });
+    }
+    if (payload.purpose !== '2fa' || !payload.id) {
+      return res.status(401).json({ success: false, error: 'Invalid or expired 2FA session' });
+    }
+
+    const user = await User.findById(payload.id).select('+totpSecret');
+    if (!user || user.isSystemUser || !user.totpEnabled || !user.totpSecret) {
+      return res.status(401).json({ success: false, error: 'Invalid or expired 2FA session' });
+    }
+    if (!verifyTotp(user.totpSecret, token)) {
+      return res.status(401).json({ success: false, error: 'Invalid authenticator code' });
+    }
+
+    const session = await issueSession(user, req, { deviceLabel });
+    res.json({ success: true, data: session });
+  } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 }
@@ -216,9 +343,9 @@ export async function resendVerification(req, res) {
     if (user.emailVerified) {
       return res.json({ success: true, data: { message: 'Email already verified', user: user.toSelfJSON() } });
     }
-    const verifyToken = user.createEmailVerifyToken();
+    const verifyTokenRaw = user.createEmailVerifyToken();
     await user.save({ validateBeforeSave: false });
-    const verifyUrl = `${appBaseUrl()}/verify-email?token=${verifyToken}`;
+    const verifyUrl = `${appBaseUrl()}/verify-email?token=${verifyTokenRaw}`;
     await sendAppMail({
       to: user.email,
       subject: 'Verify your QuantumChat email',

@@ -7,6 +7,7 @@ import messageRoutes from './routes/messageRoutes.js';
 import attachmentRoutes from './routes/attachmentRoutes.js';
 import groupRoutes from './routes/groupRoutes.js';
 import storyRoutes from './routes/storyRoutes.js';
+import trustRoutes from './routes/trustRoutes.js';
 import { authLimiter } from './middleware/rateLimiter.js';
 
 export function createApp() {
@@ -45,6 +46,7 @@ export function createApp() {
   app.use('/api/attachments', attachmentRoutes);
   app.use('/api/groups', groupRoutes);
   app.use('/api/stories', storyRoutes);
+  app.use('/api/trust', trustRoutes);
 
   app.use((req, res) => {
     res.status(404).json({ success: false, error: 'Not found' });

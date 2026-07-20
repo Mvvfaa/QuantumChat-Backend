@@ -5,6 +5,7 @@ import Attachment from '../models/Attachment.js';
 import mongoose from 'mongoose';
 import fs from 'fs';
 import { resolveUploadPath } from '../middleware/upload.js';
+import { toObjectId } from '../utils/toObjectId.js';
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
 
@@ -12,13 +13,16 @@ const PUBLIC_FIELDS =
   'username displayName bio phone email publicKeys keyRotatedAt lastLoginAt blockedUsers avatarPath avatarMimeType privacy emailVerified isSystemUser systemRole verified';
 
 export async function areUsersBlocked(userAId, userBId) {
+  const aId = toObjectId(userAId);
+  const bId = toObjectId(userBId);
+  if (!aId || !bId) return true;
   const [a, b] = await Promise.all([
-    User.findById(userAId).select('blockedUsers'),
-    User.findById(userBId).select('blockedUsers'),
+    User.findById(aId).select('blockedUsers'),
+    User.findById(bId).select('blockedUsers'),
   ]);
   if (!a || !b) return true;
-  const aBlocked = (a.blockedUsers || []).some((id) => String(id) === String(userBId));
-  const bBlocked = (b.blockedUsers || []).some((id) => String(id) === String(userAId));
+  const aBlocked = (a.blockedUsers || []).some((id) => String(id) === String(bId));
+  const bBlocked = (b.blockedUsers || []).some((id) => String(id) === String(aId));
   return aBlocked || bBlocked;
 }
 

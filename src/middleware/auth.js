@@ -10,6 +10,9 @@ export async function requireAuth(req, res, next) {
     }
 
     const payload = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
+    if (payload.purpose === '2fa') {
+      return res.status(401).json({ success: false, error: '2FA verification required' });
+    }
     const user = await User.findById(payload.id);
     if (!user) {
       return res.status(401).json({ success: false, error: 'User not found' });

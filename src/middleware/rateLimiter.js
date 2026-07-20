@@ -9,3 +9,12 @@ export const authLimiter = rateLimit({
   legacyHeaders: false,
   message: { success: false, error: 'Too many attempts, please try again shortly' },
 });
+
+/** General authenticated API limiter (CodeQL missing-rate-limiting). */
+export const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: 'Too many requests, please try again shortly' },
+});

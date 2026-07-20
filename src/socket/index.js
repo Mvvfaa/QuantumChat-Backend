@@ -73,14 +73,76 @@ export function attachSocket(io) {
       socket.emit('presence:snapshot', { onlineUserIds: visibleIds });
     })();
 
-    socket.on('typing:start', ({ to } = {}) => {
+    socket.on('typing:start', ({ to, groupId } = {}) => {
+      if (groupId) {
+        io.to(`group:${String(groupId)}`).emit('typing:start', { from: userId, groupId: String(groupId) });
+        return;
+      }
       if (!to) return;
       io.to(String(to)).emit('typing:start', { from: userId });
     });
 
-    socket.on('typing:stop', ({ to } = {}) => {
+    socket.on('typing:stop', ({ to, groupId } = {}) => {
+      if (groupId) {
+        io.to(`group:${String(groupId)}`).emit('typing:stop', { from: userId, groupId: String(groupId) });
+        return;
+      }
       if (!to) return;
       io.to(String(to)).emit('typing:stop', { from: userId });
+    });
+
+    socket.on('group:join', ({ groupId } = {}) => {
+      if (!groupId) return;
+      socket.join(`group:${String(groupId)}`);
+    });
+
+    socket.on('group:leave', ({ groupId } = {}) => {
+      if (!groupId) return;
+      socket.leave(`group:${String(groupId)}`);
+    });
+
+    // WebRTC signaling — media never touches the server
+    socket.on('call:invite', ({ to, callId, video = false } = {}) => {
+      if (!to || !callId) return;
+      io.to(String(to)).emit('call:invite', {
+        from: userId,
+        callId: String(callId),
+        video: Boolean(video),
+      });
+    });
+
+    socket.on('call:accept', ({ to, callId } = {}) => {
+      if (!to || !callId) return;
+      io.to(String(to)).emit('call:accept', { from: userId, callId: String(callId) });
+    });
+
+    socket.on('call:reject', ({ to, callId, reason } = {}) => {
+      if (!to || !callId) return;
+      io.to(String(to)).emit('call:reject', {
+        from: userId,
+        callId: String(callId),
+        reason: reason || 'rejected',
+      });
+    });
+
+    socket.on('call:hangup', ({ to, callId } = {}) => {
+      if (!to || !callId) return;
+      io.to(String(to)).emit('call:hangup', { from: userId, callId: String(callId) });
+    });
+
+    socket.on('call:offer', ({ to, callId, sdp } = {}) => {
+      if (!to || !callId || !sdp) return;
+      io.to(String(to)).emit('call:offer', { from: userId, callId: String(callId), sdp });
+    });
+
+    socket.on('call:answer', ({ to, callId, sdp } = {}) => {
+      if (!to || !callId || !sdp) return;
+      io.to(String(to)).emit('call:answer', { from: userId, callId: String(callId), sdp });
+    });
+
+    socket.on('call:ice', ({ to, callId, candidate } = {}) => {
+      if (!to || !callId || !candidate) return;
+      io.to(String(to)).emit('call:ice', { from: userId, callId: String(callId), candidate });
     });
 
     socket.on('message:delivered', async ({ messageId } = {}) => {
