@@ -12,6 +12,7 @@ import { isUserOnline } from '../socket/index.js';
 import { notifyUser } from '../services/pushService.js';
 import { incrementCiphertextsRelayed } from '../services/blindnessStats.js';
 import { resolveExpiresAt, notExpiredFilter } from '../utils/messageExpiry.js';
+import { toObjectId } from '../utils/toObjectId.js';
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
 const ATTACHMENT_POPULATE =
@@ -95,12 +96,13 @@ async function removeAttachmentFiles(attachmentId) {
 
 async function assertReplyAllowed(req, replyToId, { to, groupId }) {
   if (!replyToId) return undefined;
-  if (!mongoose.isValidObjectId(replyToId)) {
+  const replyOid = toObjectId(replyToId);
+  if (!replyOid) {
     const err = new Error('Invalid replyTo id');
     err.status = 400;
     throw err;
   }
-  const parent = await Message.findById(replyToId);
+  const parent = await Message.findById(replyOid);
   if (!parent) {
     const err = new Error('Reply target not found');
     err.status = 404;
@@ -180,13 +182,14 @@ async function userCanAccessMessageAsync(userId, message) {
 async function assertForwardAllowed(req, forwardedFrom) {
   if (!forwardedFrom || typeof forwardedFrom !== 'object') return undefined;
   const messageId = forwardedFrom.messageId;
+  const messageOid = toObjectId(messageId);
   const meta = {
     username: String(forwardedFrom.username || '').slice(0, 64) || undefined,
-    messageId: mongoose.isValidObjectId(messageId) ? messageId : undefined,
+    messageId: messageOid || undefined,
   };
   if (!meta.messageId) return meta;
 
-  const original = await Message.findById(meta.messageId);
+  const original = await Message.findById(messageOid);
   if (!original) {
     const err = new Error('Original message not found');
     err.status = 404;
@@ -210,10 +213,11 @@ async function assertForwardAllowed(req, forwardedFrom) {
 export async function checkForwardAllowed(req, res) {
   try {
     const { messageId } = req.params;
-    if (!mongoose.isValidObjectId(messageId)) {
+    const messageOid = toObjectId(messageId);
+    if (!messageOid) {
       return res.status(400).json({ success: false, error: 'Invalid message id' });
     }
-    const original = await Message.findById(messageId);
+    const original = await Message.findById(messageOid);
     if (!original) {
       return res.status(404).json({
         success: false,
@@ -369,7 +373,8 @@ export async function publishQuantumAIDirectResponse(req, res) {
 export async function getConversation(req, res) {
   try {
     const { userId } = req.params;
-    if (!mongoose.isValidObjectId(userId)) {
+    const peerOid = toObjectId(userId);
+    if (!peerOid) {
       return res.status(400).json({ success: false, error: 'Invalid user id' });
     }
 
@@ -381,8 +386,8 @@ export async function getConversation(req, res) {
       $and: [
         {
           $or: [
-            { from: req.user._id, to: userId },
-            { from: userId, to: req.user._id },
+            { from: req.user._id, to: peerOid },
+            { from: peerOid, to: req.user._id },
           ],
         },
         notExpiredFilter(),

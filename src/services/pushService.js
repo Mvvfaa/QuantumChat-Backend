@@ -1,5 +1,6 @@
 import webpush from 'web-push';
 import PushSubscription from '../models/PushSubscription.js';
+import { toObjectId } from '../utils/toObjectId.js';
 
 let vapidPublicKey = null;
 let pushReady = false;
@@ -78,7 +79,10 @@ export async function notifyUser(userId, payload) {
   initFromEnv();
   if (!pushReady) return;
 
-  const subs = await PushSubscription.find({ user: userId });
+  const uid = toObjectId(userId);
+  if (!uid) return;
+
+  const subs = await PushSubscription.find({ user: uid });
   if (!subs.length) return;
 
   const body = JSON.stringify({

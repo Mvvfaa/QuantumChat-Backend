@@ -23,10 +23,12 @@ import { getVault, putVault, deleteVault } from '../controllers/vaultController.
 import { createAiCapsule, listAiCapsules } from '../controllers/capsuleController.js';
 import { requireAuth } from '../middleware/auth.js';
 import { avatarUpload } from '../middleware/upload.js';
+import { apiLimiter } from '../middleware/rateLimiter.js';
 
 const router = Router();
 
 router.use(requireAuth);
+router.use(apiLimiter);
 router.get('/', listUsers);
 router.patch('/me', updateProfile);
 router.patch('/me/public-keys', updatePublicKeys);

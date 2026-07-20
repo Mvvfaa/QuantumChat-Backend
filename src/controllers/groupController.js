@@ -10,6 +10,7 @@ import { isUserOnline } from '../socket/index.js';
 import { notifyUser } from '../services/pushService.js';
 import { incrementCiphertextsRelayed } from '../services/blindnessStats.js';
 import { resolveExpiresAt, notExpiredFilter } from '../utils/messageExpiry.js';
+import { toObjectId } from '../utils/toObjectId.js';
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
 const ATTACHMENT_POPULATE =
@@ -620,10 +621,11 @@ export async function sendGroupMessage(req, res) {
 
     let replyToId;
     if (replyTo) {
-      if (!mongoose.isValidObjectId(replyTo)) {
+      const replyOid = toObjectId(replyTo);
+      if (!replyOid) {
         return res.status(400).json({ success: false, error: 'Invalid replyTo id' });
       }
-      const parent = await Message.findById(replyTo);
+      const parent = await Message.findById(replyOid);
       if (!parent || String(parent.group || '') !== String(groupId)) {
         return res.status(400).json({ success: false, error: 'Reply must be in the same group' });
       }
@@ -831,10 +833,11 @@ export async function publishQuantumAIGroupResponse(req, res) {
 export async function getGroupMessages(req, res) {
   try {
     const { groupId } = req.params;
-    if (!mongoose.isValidObjectId(groupId)) {
+    const groupOid = toObjectId(groupId);
+    if (!groupOid) {
       return res.status(400).json({ success: false, error: 'Invalid group id' });
     }
-    const group = await Group.findById(groupId);
+    const group = await Group.findById(groupOid);
     if (!group) return res.status(404).json({ success: false, error: 'Group not found' });
     if (!group.isMember(req.user._id)) {
       return res.status(403).json({ success: false, error: 'Not a group member' });
@@ -843,7 +846,7 @@ export async function getGroupMessages(req, res) {
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 80, 1), 200);
     const before = req.query.before ? new Date(req.query.before) : null;
     const filter = {
-      $and: [{ group: groupId }, notExpiredFilter()],
+      $and: [{ group: groupOid }, notExpiredFilter()],
     };
     if (before && !Number.isNaN(before.getTime())) {
       filter.$and.push({ createdAt: { $lt: before } });
