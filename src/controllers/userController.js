@@ -1085,6 +1085,12 @@ export async function sendFriendRequest(req, res) {
     if (target.isSystemUser) {
       return res.status(400).json({ success: false, error: 'Cannot send a friend request to this account' });
     }
+     if (req.user.moderation?.status === 'restricted') {
+      return res.status(403).json({
+        success: false,
+        error: 'Your account is currently restricted from sending new friend requests',
+      });
+    }
     if (await areUsersBlocked(req.user._id, target._id)) {
       return res.status(403).json({ success: false, error: 'Not allowed' });
     }
@@ -1133,13 +1139,24 @@ export async function sendFriendRequest(req, res) {
 export async function listFriendRequests(req, res) {
   try {
     const [incoming, outgoing] = await Promise.all([
-      FriendRequest.find({ to: req.user._id, status: 'pending' }).populate('from', PUBLIC_FIELDS),
+      // Include `moderation` on the populated sender only — it's never
+      // added to the shared PUBLIC_FIELDS constant, so no other endpoint
+      // that reuses that string starts leaking report counts.
+      FriendRequest.find({ to: req.user._id, status: 'pending' }).populate('from', `${PUBLIC_FIELDS} moderation`),
       FriendRequest.find({ from: req.user._id, status: 'pending' }).populate('to', PUBLIC_FIELDS),
     ]);
     res.json({
       success: true,
       data: {
-        incoming: incoming.map((r) => ({ id: r._id, user: r.from.toPublicJSON(), createdAt: r.createdAt })),
+        incoming: incoming.map((r) => ({
+          id: r._id,
+          user: r.from.toPublicJSON(),
+          createdAt: r.createdAt,
+          // null below the 7-report threshold; otherwise
+          // { reportedByMultiple: true, commonReason } — never a count,
+          // never anything about who reported.
+          moderationWarning: r.from.getModerationSafetyWarning?.() || null,
+        })),
         outgoing: outgoing.map((r) => ({ id: r._id, user: r.to.toPublicJSON(), createdAt: r.createdAt })),
       },
     });

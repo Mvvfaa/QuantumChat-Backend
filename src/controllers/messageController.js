@@ -367,6 +367,16 @@ export async function sendMessage(req, res) {
     if (senderBlockedRecipient || recipientBlockedSender) {
       return res.status(403).json({ success: false, error: 'Cannot message a blocked user' });
     }
+    if (req.user.moderation?.status === 'restricted') {
+      const isFriend = (req.user.friends || []).some((id) => String(id) === String(toOid));
+      const isSelfChat = String(toOid) === String(req.user._id);
+      if (!isFriend && !isSelfChat) {
+        return res.status(403).json({
+          success: false,
+          error: 'Your account is currently restricted from messaging new contacts',
+        });
+      }
+    }
     await assertCanDirectMessageWithDoc(req.user._id, recipient);
     const expiresAt = resolveExpiresAt(expiresInSeconds);
     if (expiresAt === null) {

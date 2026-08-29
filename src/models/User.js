@@ -332,6 +332,24 @@ friends: [
     ref: 'User',
   },
 ],
+    /**
+     * Cached moderation state, recomputed on every new (non-duplicate,
+     * trusted) report against this account — see reportController.js.
+     * Never derive this by re-querying the Report collection on every
+     * read; it's denormalized here specifically so reads stay cheap.
+     */
+    moderation: {
+      reportCount: { type: Number, default: 0 },
+      // Per-reason tally, e.g. { spam: 5, harassment: 2 } — lets the
+      // "most common reason" be read directly with no aggregation query.
+      reasonCounts: { type: Map, of: Number, default: () => new Map() },
+      status: {
+        type: String,
+        enum: ['none', 'flagged', 'restricted'],
+        default: 'none',
+      },
+      lastReportedAt: { type: Date, default: null },
+    },
     
     preferredLanguage: {
       type: String,
@@ -390,6 +408,30 @@ userSchema.methods.createPasswordResetToken = function createPasswordResetToken(
   this.passwordResetToken = crypto.createHash('sha256').update(token).digest('hex');
   this.passwordResetExpires = new Date(Date.now() + 60 * 60 * 1000);
   return token;
+};
+
+/**
+ * Minimal safety-warning payload for someone considering accepting a
+ * friend request from this account — deliberately exposes only a boolean
+ * and the single most common report reason, never the exact count and
+ * never anything about who reported. Returns null below the 7-report
+ * threshold, so callers can just check truthiness.
+ */
+userSchema.methods.getModerationSafetyWarning = function getModerationSafetyWarning() {
+  const count = this.moderation?.reportCount || 0;
+  if (count < 7) return null;
+  const reasonCounts = this.moderation?.reasonCounts;
+  let topReason = null;
+  let topCount = 0;
+  if (reasonCounts) {
+    for (const [reason, n] of reasonCounts.entries()) {
+      if (n > topCount) {
+        topCount = n;
+        topReason = reason;
+      }
+    }
+  }
+  return { reportedByMultiple: true, commonReason: topReason };
 };
 
 userSchema.methods.toPublicJSON = function toPublicJSON(viewerId) {
@@ -505,6 +547,14 @@ userSchema.methods.toSelfJSON = function toSelfJSON() {
     preferredLanguage: this.preferredLanguage || 'en',
     dateOfBirth: this.dateOfBirth,
     timezone: this.timezone || 'UTC',
+    // Own moderation status only — this is never in toPublicJSON, so no
+    // one else can see it. count/status shown to the account holder
+    // directly (unlike getModerationSafetyWarning(), which is the
+    // minimal-disclosure version shown to OTHERS in a friend-request context).
+    moderation: {
+      status: this.moderation?.status || 'none',
+      reportCount: this.moderation?.reportCount || 0,
+    },
     emailVerified: Boolean(this.emailVerified),
     lastLoginAt: this.lastLoginAt,
     blockedUsers: Array.isArray(this.blockedUsers) ? this.blockedUsers.map((id) => String(id)) : [],
