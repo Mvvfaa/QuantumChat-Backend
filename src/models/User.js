@@ -358,6 +358,20 @@ friends: [
       maxlength: 10,
       default: 'en',
     },
+    transliteratedNames: {
+      type: new mongoose.Schema(
+        {
+          ur: { type: String, trim: true, default: '' },
+          ar: { type: String, trim: true, default: '' },
+          fa: { type: String, trim: true, default: '' },
+          hi: { type: String, trim: true, default: '' },
+          zh: { type: String, trim: true, default: '' },
+          ru: { type: String, trim: true, default: '' },
+        },
+        { _id: false }
+      ),
+      default: () => ({}),
+    },
     avatarPath: {
       type: String,
       default: null,
@@ -536,6 +550,11 @@ userSchema.methods.toPublicJSON = function toPublicJSON(viewerId) {
     systemRole: this.systemRole || null,
     verified: Boolean(this.verified),
     preferredLanguage: this.preferredLanguage || 'en',
+    transliteratedNames: this.transliteratedNames
+      ? (typeof this.transliteratedNames.toObject === 'function'
+          ? this.transliteratedNames.toObject()
+          : this.transliteratedNames)
+      : {},
   };
 };
 

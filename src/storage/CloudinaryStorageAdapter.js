@@ -1,5 +1,6 @@
 import { v2 as cloudinary } from 'cloudinary';
 import crypto from 'crypto';
+import { applyCloudinaryUrlFromEnv, cloudinaryEnv } from './cloudinaryEnv.js';
 
 /**
  * Durable blob storage backed by Cloudinary.
@@ -16,9 +17,10 @@ export class CloudinaryStorageAdapter {
 
   ensureConfigured() {
     if (this.configured) return;
-    const cloud_name = String(process.env.CLOUDINARY_CLOUD_NAME || '').trim();
-    const api_key = String(process.env.CLOUDINARY_API_KEY || '').trim();
-    const api_secret = String(process.env.CLOUDINARY_API_SECRET || '').trim();
+    applyCloudinaryUrlFromEnv();
+    const cloud_name = cloudinaryEnv('CLOUDINARY_CLOUD_NAME');
+    const api_key = cloudinaryEnv('CLOUDINARY_API_KEY');
+    const api_secret = cloudinaryEnv('CLOUDINARY_API_SECRET');
     if (!cloud_name || !api_key || !api_secret) {
       throw new Error(
         'Cloudinary storage requires CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET'

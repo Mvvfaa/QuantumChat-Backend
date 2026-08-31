@@ -142,6 +142,18 @@ function toClientMessage(doc) {
       editedAt: h.editedAt,
     }));
   }
+  if (Array.isArray(message.deliveredTo)) {
+    message.deliveredTo = message.deliveredTo.map((d) => ({
+      user: d.user?.toString?.() || String(d.user),
+      at: d.at,
+    }));
+  }
+  if (Array.isArray(message.readBy)) {
+    message.readBy = message.readBy.map((r) => ({
+      user: r.user?.toString?.() || String(r.user),
+      at: r.at,
+    }));
+  }
   if (message.viewOnceOpenedBy) {
     message.viewOnceOpenedBy = message.viewOnceOpenedBy?.toString?.() || String(message.viewOnceOpenedBy);
   }
@@ -1129,7 +1141,10 @@ export async function getMessageInfo(req, res) {
     }
 
     if (message.group) {
-      const group = await Group.findById(message.group).populate('members', 'username avatarPath');
+      const group = await Group.findById(message.group).populate(
+        'members',
+        'username displayName transliteratedNames avatarPath'
+      );
       if (!group) return res.status(404).json({ success: false, error: 'Group not found' });
 
       const deliveredMap = new Map((message.deliveredTo || []).map((d) => [String(d.user), d.at]));
@@ -1140,6 +1155,8 @@ export async function getMessageInfo(req, res) {
         .map((m) => ({
           userId: String(m._id),
           username: m.username,
+          displayName: m.displayName || '',
+          transliteratedNames: m.transliteratedNames || null,
           hasAvatar: Boolean(m.avatarPath),
           deliveredAt: deliveredMap.get(String(m._id)) || null,
           readAt: readMap.get(String(m._id)) || null,
@@ -1151,7 +1168,7 @@ export async function getMessageInfo(req, res) {
           id: message._id.toString(),
           isGroup: true,
           totalRecipients: members.length,
-          deliveredCount: members.filter((m) => m.deliveredAt).length,
+          deliveredCount: members.filter((m) => m.deliveredAt || m.readAt).length,
           readCount: members.filter((m) => m.readAt).length,
           members,
         },

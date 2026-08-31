@@ -88,6 +88,12 @@ function toClientMessage(doc) {
   return message;
 }
 
+function allowsReadReceipts(privacy) {
+  const value = privacy?.readReceipts;
+  if (value === false || value === 'nobody') return false;
+  return true;
+}
+
 function emitToMembers(io, memberIds, event, payload) {
   if (!io) return;
   for (const id of memberIds) {
@@ -1336,8 +1342,11 @@ export async function getGroupMessages(req, res) {
     const page = hasMore ? rows.slice(0, limit) : rows;
     page.reverse();
 
+    const markRead = req.query.markRead === '1' || req.query.markRead === 'true' || req.query.markRead === true;
+    const allowReadReceipts = allowsReadReceipts(req.user.privacy);
     const now = new Date();
     const uid = req.user._id;
+
     const undeliveredIds = page
       .filter(
         (msg) =>
@@ -1346,22 +1355,75 @@ export async function getGroupMessages(req, res) {
       )
       .map((msg) => msg._id);
 
-    if (undeliveredIds.length) {
-      await Message.updateMany(
-        { _id: { $in: undeliveredIds }, 'deliveredTo.user': { $ne: uid } },
-        { $push: { deliveredTo: { user: uid, at: now } } }
-      );
+    const unreadIds = (markRead && allowReadReceipts)
+      ? page
+          .filter(
+            (msg) =>
+              String(msg.from) !== String(uid) &&
+              !(msg.readBy || []).some((r) => String(r.user) === String(uid))
+          )
+          .map((msg) => msg._id)
+      : [];
+
+    if (undeliveredIds.length || unreadIds.length) {
+      const ops = [];
+      if (undeliveredIds.length) {
+        ops.push(
+          Message.updateMany(
+            { _id: { $in: undeliveredIds }, 'deliveredTo.user': { $ne: uid } },
+            { $push: { deliveredTo: { user: uid, at: now } } }
+          )
+        );
+      }
+      if (unreadIds.length) {
+        ops.push(
+          Message.updateMany(
+            { _id: { $in: unreadIds }, 'readBy.user': { $ne: uid } },
+            { $push: { readBy: { user: uid, at: now } } }
+          ),
+          Message.updateMany(
+            { _id: { $in: unreadIds }, 'deliveredTo.user': { $ne: uid } },
+            { $push: { deliveredTo: { user: uid, at: now } } }
+          )
+        );
+      }
+      await Promise.all(ops);
+
       for (const msg of page) {
         if (undeliveredIds.some((id) => String(id) === String(msg._id))) {
           msg.deliveredTo = [...(msg.deliveredTo || []), { user: uid, at: now }];
         }
+        if (unreadIds.some((id) => String(id) === String(msg._id))) {
+          msg.readBy = [...(msg.readBy || []), { user: uid, at: now }];
+          if (!(msg.deliveredTo || []).some((d) => String(d.user) === String(uid))) {
+            msg.deliveredTo = [...(msg.deliveredTo || []), { user: uid, at: now }];
+          }
+        }
       }
-      req.app.get('io')?.to(`group:${groupOid}`).emit('message:status', {
-        groupId: String(groupOid),
-        userId: String(uid),
-        messageIds: undeliveredIds.map(String),
-        deliveredAt: now,
-      });
+
+      const io = req.app.get('io');
+      if (io) {
+        if (unreadIds.length) {
+          io.to(`group:${groupOid}`).emit('message:status', {
+            groupId: String(groupOid),
+            userId: String(uid),
+            messageIds: unreadIds.map(String),
+            deliveredAt: now,
+            readAt: now,
+          });
+        }
+        const deliveredOnlyIds = undeliveredIds.filter(
+          (id) => !unreadIds.some((uid2) => String(uid2) === String(id))
+        );
+        if (deliveredOnlyIds.length) {
+          io.to(`group:${groupOid}`).emit('message:status', {
+            groupId: String(groupOid),
+            userId: String(uid),
+            messageIds: deliveredOnlyIds.map(String),
+            deliveredAt: now,
+          });
+        }
+      }
     }
 
     res.json({
@@ -1390,6 +1452,10 @@ export async function markGroupMessagesRead(req, res) {
       return res.status(403).json({ success: false, error: 'Not a group member' });
     }
 
+    if (!allowsReadReceipts(req.user.privacy)) {
+      return res.json({ success: true, data: { updated: 0 } });
+    }
+
     const uid = req.user._id;
     const now = new Date();
 
@@ -1403,14 +1469,16 @@ export async function markGroupMessagesRead(req, res) {
       return res.json({ success: true, data: { updated: 0 } });
     }
 
-    await Message.updateMany(
-      { _id: { $in: unreadIds }, 'deliveredTo.user': { $ne: uid } },
-      { $push: { deliveredTo: { user: uid, at: now } } }
-    );
-    await Message.updateMany(
-      { _id: { $in: unreadIds }, 'readBy.user': { $ne: uid } },
-      { $push: { readBy: { user: uid, at: now } } }
-    );
+    await Promise.all([
+      Message.updateMany(
+        { _id: { $in: unreadIds }, 'deliveredTo.user': { $ne: uid } },
+        { $push: { deliveredTo: { user: uid, at: now } } }
+      ),
+      Message.updateMany(
+        { _id: { $in: unreadIds }, 'readBy.user': { $ne: uid } },
+        { $push: { readBy: { user: uid, at: now } } }
+      ),
+    ]);
 
     req.app.get('io')?.to(`group:${groupOid}`).emit('message:status', {
       groupId: String(groupOid),

@@ -9,6 +9,7 @@ import {
 import { appBaseUrl, sendAppMail, shouldExposeEmailLinks } from '../utils/mail.js';
 import { buildOtpauthUrl, generateTotpSecret, verifyTotp } from '../utils/totp.js';
 import { registerSession } from './sessionController.js';
+import { generateTransliteratedNames } from '../services/transliterationService.js';
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
 
@@ -91,11 +92,21 @@ export async function register(req, res) {
       return res.status(409).json({ success: false, error: 'Username or email already in use' });
     }
 
+    const cleanDisplayName = typeof displayName === 'string' ? displayName.trim().slice(0, 60) : '';
+    const nameToTransliterate = cleanDisplayName || normalizedUsername;
+    let transliteratedNames = {};
+    try {
+      transliteratedNames = await generateTransliteratedNames(nameToTransliterate);
+    } catch {
+      // Gracefully fall back to empty object on failure
+    }
+
     const user = new User({
       username: normalizedUsername,
       email: normalizedEmail,
       password,
-      displayName: typeof displayName === 'string' ? displayName.trim().slice(0, 60) : '',
+      displayName: cleanDisplayName,
+      transliteratedNames,
       dateOfBirth: parsedDob,
       timezone: resolvedTimezone,
       preferredLanguage: resolvedLang,

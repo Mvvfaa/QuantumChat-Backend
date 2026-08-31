@@ -20,6 +20,7 @@ import reportRoutes from './routes/reportRoutes.js';
 import storyRoutes from './routes/storyRoutes.js';
 import trustRoutes from './routes/trustRoutes.js';
 import userRoutes from './routes/userRoutes.js';
+import { hasCloudinaryCredentials } from './storage/cloudinaryEnv.js';
 export function createApp() {
   const app = express();
 
@@ -68,7 +69,15 @@ export function createApp() {
   app.use(express.json({ limit: '100kb' }));
   app.use('/api/gifs', gifRoutes);
 app.use('/api/activity', activityRoutes);
-  app.get('/api/health', (req, res) => res.json({ success: true, data: { status: 'ok' } }));
+  app.get('/api/health', (req, res) => {
+    res.json({
+      success: true,
+      data: {
+        status: 'ok',
+        cloudinaryConfigured: hasCloudinaryCredentials(),
+      },
+    });
+  });
 
   // Serverless-safe trigger for the birthday-notification sweep. server.js's
     // setInterval only runs on a persistent process (local dev / non-serverless

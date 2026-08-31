@@ -8,11 +8,12 @@ import { conversationKey } from '../utils/conversationKey.js';
 import { normalizeNotificationSettings } from '../utils/notificationSettings.js';
 import { isEmailLike, normalizePhone, phoneLookupVariants } from '../utils/phone.js';
 import { toObjectId } from '../utils/toObjectId.js';
+import { generateTransliteratedNames } from '../services/transliterationService.js';
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
 
 const PUBLIC_FIELDS =
-  'username displayName statusText bio phone birthday email publicKeys keyRotatedAt lastLoginAt blockedUsers friends avatarPath avatarMimeType privacy preferredLanguage emailVerified isSystemUser systemRole verified';
+  'username displayName statusText bio phone birthday email publicKeys keyRotatedAt lastLoginAt blockedUsers friends avatarPath avatarMimeType privacy preferredLanguage transliteratedNames emailVerified isSystemUser systemRole verified';
 
 
 export async function areUsersBlocked(userAId, userBId, aBlockedUsersHint) {
@@ -203,7 +204,7 @@ export async function updatePrivacy(req, res) {
 
 export async function updateProfile(req, res) {
   try {
-    const { displayName, statusText, bio, phone, username, privacy, dateOfBirth, timezone, preferredLanguage } = req.body || {};
+    const { displayName, statusText, bio, phone, username, privacy, dateOfBirth, timezone, preferredLanguage, transliteratedNames } = req.body || {};
     const user = req.user;
 
     if (preferredLanguage != null) {
@@ -212,6 +213,17 @@ export async function updateProfile(req, res) {
         return res.status(400).json({ success: false, error: 'Invalid preferred language format' });
       }
       user.preferredLanguage = lang;
+    }
+
+    if (transliteratedNames && typeof transliteratedNames === 'object') {
+      const allowedLangs = ['ur', 'ar', 'fa', 'hi', 'zh', 'ru'];
+      user.transliteratedNames = user.transliteratedNames || {};
+      for (const lang of allowedLangs) {
+        if (transliteratedNames[lang] !== undefined) {
+          user.transliteratedNames[lang] = String(transliteratedNames[lang]).trim().slice(0, 60);
+        }
+      }
+      user.markModified('transliteratedNames');
     }
 
     if (username != null) {
@@ -229,7 +241,22 @@ export async function updateProfile(req, res) {
       if (typeof displayName !== 'string' || displayName.length > 60) {
         return res.status(400).json({ success: false, error: 'Display name must be under 60 characters' });
       }
-      user.displayName = displayName.trim();
+      const trimmedDisplay = displayName.trim();
+      const changed = trimmedDisplay !== user.displayName;
+      user.displayName = trimmedDisplay;
+
+      if (changed && !transliteratedNames) {
+        try {
+          const generated = await generateTransliteratedNames(user.displayName || user.username);
+          user.transliteratedNames = {
+            ...(user.transliteratedNames?.toObject?.() || user.transliteratedNames || {}),
+            ...generated,
+          };
+          user.markModified('transliteratedNames');
+        } catch {
+          // Graceful fallback
+        }
+      }
     }
     if (bio != null) {
       if (typeof bio !== 'string' || bio.length > 300) {

@@ -1,21 +1,18 @@
 import { CloudinaryStorageAdapter } from './CloudinaryStorageAdapter.js';
 import { LocalDiskStorageAdapter } from './LocalDiskStorageAdapter.js';
 import { MemoryStorageAdapter } from './MemoryStorageAdapter.js';
+import {
+  hasCloudinaryCredentials,
+  isVercelRuntime,
+} from './cloudinaryEnv.js';
 
 /** @type {CloudinaryStorageAdapter | LocalDiskStorageAdapter | MemoryStorageAdapter | null} */
 let cached;
 
-function hasCloudinaryCredentials() {
-  return Boolean(
-    process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET
-  );
-}
-
 /**
  * Durable blob storage.
- * Cloudinary is the only production-grade provider; local disk is a dev/test
- * escape hatch for when Cloudinary credentials aren't set (Vercel's
- * filesystem is ephemeral, so local disk never works there).
+ * Cloudinary is required on Vercel. Local disk is used on your machine even
+ * if NODE_ENV=production is set in Windows (dotenv will not override it).
  */
 export function getStorage() {
   if (cached) return cached;
@@ -38,14 +35,15 @@ export function getStorage() {
     return cached;
   }
 
-  if (process.env.NODE_ENV === 'production') {
+  // Only fail hard on Vercel, where disk is ephemeral.
+  if (isVercelRuntime()) {
     throw new Error(
-      'Cloudinary storage missing CLOUDINARY_CLOUD_NAME/CLOUDINARY_API_KEY/CLOUDINARY_API_SECRET. Add them to the environment and restart the server.'
+      'Cloudinary storage missing CLOUDINARY_CLOUD_NAME/CLOUDINARY_API_KEY/CLOUDINARY_API_SECRET. Add them to the Vercel backend project (Production), then Redeploy.',
     );
   }
 
   console.warn(
-    '[storage] Cloudinary credentials missing — using local uploads/ folder for development. Set CLOUDINARY_* in backend/.env for production-like storage.'
+    '[storage] Cloudinary credentials missing — using local uploads/ folder. Set CLOUDINARY_* in backend/.env to use Cloudinary.',
   );
   cached = new LocalDiskStorageAdapter();
   return cached;
@@ -55,7 +53,7 @@ export function getStorageProviderName() {
   if (process.env.STORAGE_PROVIDER === 'memory') return 'memory';
   if (process.env.STORAGE_PROVIDER === 'local') return 'local';
   if (hasCloudinaryCredentials()) return 'cloudinary';
-  return process.env.NODE_ENV === 'production' ? 'cloudinary' : 'local';
+  return isVercelRuntime() ? 'cloudinary' : 'local';
 }
 
 export { CloudinaryStorageAdapter } from './CloudinaryStorageAdapter.js';

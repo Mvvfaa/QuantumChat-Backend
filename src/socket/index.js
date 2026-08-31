@@ -282,6 +282,91 @@ export function attachSocket(io) {
       }
     });
 
+    socket.on('message:read', async ({ messageId, groupId } = {}) => {
+      try {
+        const Message = (await import('../models/Message.js')).default;
+        const now = new Date();
+
+        if (groupId) {
+          const Group = (await import('../models/Group.js')).default;
+          const group = await Group.findById(groupId).select('members');
+          if (!group || !group.isMember(userId)) return;
+
+          const query = messageId
+            ? { _id: messageId, group: groupId, from: { $ne: userId }, 'readBy.user': { $ne: userId } }
+            : { group: groupId, from: { $ne: userId }, 'readBy.user': { $ne: userId } };
+
+          const unread = await Message.find(query).select('_id');
+          const unreadIds = unread.map((m) => m._id);
+          if (!unreadIds.length) return;
+
+          await Promise.all([
+            Message.updateMany(
+              { _id: { $in: unreadIds }, 'deliveredTo.user': { $ne: userId } },
+              { $push: { deliveredTo: { user: userId, at: now } } }
+            ),
+            Message.updateMany(
+              { _id: { $in: unreadIds }, 'readBy.user': { $ne: userId } },
+              { $push: { readBy: { user: userId, at: now } } }
+            ),
+          ]);
+
+          io.to(`group:${String(groupId)}`).emit('message:status', {
+            groupId: String(groupId),
+            userId,
+            messageIds: unreadIds.map(String),
+            deliveredAt: now,
+            readAt: now,
+          });
+          return;
+        }
+
+        if (messageId) {
+          const msg = await Message.findById(messageId);
+          if (!msg) return;
+
+          if (msg.group) {
+            if (String(msg.from) === userId) return;
+            const already = (msg.readBy || []).some((r) => String(r.user) === userId);
+            if (already) return;
+            await Promise.all([
+              Message.updateOne(
+                { _id: msg._id, 'deliveredTo.user': { $ne: userId } },
+                { $push: { deliveredTo: { user: userId, at: now } } }
+              ),
+              Message.updateOne(
+                { _id: msg._id, 'readBy.user': { $ne: userId } },
+                { $push: { readBy: { user: userId, at: now } } }
+              ),
+            ]);
+            io.to(`group:${String(msg.group)}`).emit('message:status', {
+              groupId: String(msg.group),
+              userId,
+              messageIds: [String(msg._id)],
+              deliveredAt: now,
+              readAt: now,
+            });
+            return;
+          }
+
+          if (String(msg.to) !== userId) return;
+          if (msg.readAt) return;
+          msg.deliveredAt = msg.deliveredAt || now;
+          msg.readAt = now;
+          await msg.save();
+          const payload = {
+            id: msg._id.toString(),
+            deliveredAt: msg.deliveredAt,
+            readAt: msg.readAt,
+          };
+          io.to(String(msg.from)).emit('message:status', payload);
+          io.to(userId).emit('message:status', payload);
+        }
+      } catch {
+        // ignore
+      }
+    });
+
     socket.on('disconnect', async () => {
       socket.leave(userId);
       const wentOffline = setOffline(userId, socket.id);
