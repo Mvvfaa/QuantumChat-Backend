@@ -457,15 +457,13 @@ userSchema.methods.toPublicJSON = function toPublicJSON(viewerId) {
   const privacy = this.privacy || {};
   const lastSeenSetting = privacy.lastSeen || 'everyone';
   let showLastSeen = false;
-  if (lastSeenSetting === 'everyone') {
+  if (viewerId && String(viewerId) === String(this._id)) {
+    showLastSeen = true;
+  } else if (lastSeenSetting === 'everyone') {
     showLastSeen = true;
   } else if (lastSeenSetting === 'friends' && viewerId) {
-    if (String(viewerId) === String(this._id)) {
-      showLastSeen = true;
-    } else {
-      const friendIds = (this.friends || []).map((f) => String(f._id || f));
-      showLastSeen = friendIds.includes(String(viewerId));
-    }
+    const friendIds = (this.friends || []).map((f) => String(f._id || f));
+    showLastSeen = friendIds.includes(String(viewerId));
   }
 
   const profileVisibilitySetting = privacy.profileVisibility || 'everyone';
@@ -514,14 +512,16 @@ userSchema.methods.toPublicJSON = function toPublicJSON(viewerId) {
     id: this._id,
     username: this.username,
     displayName: this.displayName || '',
-    statusText: this.statusText || '',
+    statusText: showProfileDetails ? (this.statusText || '') : '',
     bio: showProfileDetails ? (this.bio || '') : '',
     phone: showProfileDetails ? (this.phone || '') : '',
-    birthday: (showBirthday && this.birthday) ? this.birthday : null,
+    birthday: (showBirthday && this.dateOfBirth) ? this.dateOfBirth : null,
     publicKeys: publicKeys.map((k) => String(k).toLowerCase()),
     keyRotatedAt: this.keyRotatedAt,
     lastLoginAt: showLastSeen ? this.lastLoginAt : null,
-    hasAvatar: Boolean(this.avatarPath),
+    hasAvatar: showProfileDetails ? Boolean(this.avatarPath) : false,
+      profileLocked: !showProfileDetails,   // ← new
+  birthdayLocked: !showBirthday, 
     privacy: {
       lastSeen: privacy.lastSeen || 'everyone',
       online: privacy.online || 'everyone',

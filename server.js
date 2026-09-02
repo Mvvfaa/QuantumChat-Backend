@@ -3,6 +3,7 @@ import http from "http";
 import { Server } from "socket.io";
 import { createApp } from "./src/app.js";
 import { connectDB } from "./src/config/db.js";
+import { allowedOrigins } from "./src/config/corsOrigins.js";
 import { runBirthdayNotifications } from "./src/jobs/birthdayNotifications.js";
 import { runExpiryJobs } from "./src/jobs/expireMessages.js";
 import FriendRequest from "./src/models/FriendRequest.js";
@@ -20,7 +21,16 @@ async function main() {
     .filter(Boolean);
 
   const io = new Server(server, {
-    cors: { origin: allowedOrigins },
+    cors: {
+      origin: (origin, callback) => {
+        // Native mobile clients often omit Origin; allow that in dev.
+        if (!origin || allowedOrigins.includes(origin) || process.env.NODE_ENV !== "production") {
+          callback(null, true);
+        } else {
+          callback(null, false);
+        }
+      },
+    },
   });
   attachSocket(io);
   app.set("io", io);

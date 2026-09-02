@@ -37,6 +37,19 @@ export function hasCloudinaryCredentials() {
   );
 }
 
+/** Safe booleans for /api/health — never exposes secret values. */
+export function getCloudinaryDiagnostics() {
+  applyCloudinaryUrlFromEnv();
+  return {
+    cloudNameSet: Boolean(cloudinaryEnv('CLOUDINARY_CLOUD_NAME')),
+    apiKeySet: Boolean(cloudinaryEnv('CLOUDINARY_API_KEY')),
+    apiSecretSet: Boolean(cloudinaryEnv('CLOUDINARY_API_SECRET')),
+    cloudinaryUrlSet: Boolean(cloudinaryEnv('CLOUDINARY_URL')),
+    storageProvider: cloudinaryEnv('STORAGE_PROVIDER') || null,
+    isVercel: isVercelRuntime(),
+  };
+}
+
 export function isVercelRuntime() {
   return process.env.VERCEL === '1' || process.env.VERCEL === 'true';
 }

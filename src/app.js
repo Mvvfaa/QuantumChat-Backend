@@ -1,6 +1,7 @@
 import cors from 'cors';
 import express from 'express';
 import helmet from 'helmet';
+import mongoose from 'mongoose';
 import { allowedOrigins } from './config/corsOrigins.js';
 import { runBirthdayNotifications } from './jobs/birthdayNotifications.js';
 import { publicApiIpLimiter } from './middleware/apiKeyAuth.js';
@@ -20,7 +21,10 @@ import reportRoutes from './routes/reportRoutes.js';
 import storyRoutes from './routes/storyRoutes.js';
 import trustRoutes from './routes/trustRoutes.js';
 import userRoutes from './routes/userRoutes.js';
-import { hasCloudinaryCredentials } from './storage/cloudinaryEnv.js';
+import {
+  getCloudinaryDiagnostics,
+  hasCloudinaryCredentials,
+} from './storage/cloudinaryEnv.js';
 export function createApp() {
   const app = express();
 
@@ -70,11 +74,17 @@ export function createApp() {
   app.use('/api/gifs', gifRoutes);
 app.use('/api/activity', activityRoutes);
   app.get('/api/health', (req, res) => {
+    const cloudinary = getCloudinaryDiagnostics();
+    const mongoConnected = mongoose.connection.readyState === 1;
     res.json({
       success: true,
       data: {
         status: 'ok',
         cloudinaryConfigured: hasCloudinaryCredentials(),
+        cloudinary,
+        database: mongoConnected
+          ? { connected: true, name: mongoose.connection.name, host: mongoose.connection.host }
+          : { connected: false },
       },
     });
   });

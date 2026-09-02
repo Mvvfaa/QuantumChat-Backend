@@ -45,7 +45,6 @@ async function broadcastPresence(io, userId, isOnline, lastLoginAtIso) {
     }
 
     if (setting === 'nobody') return;
-
     const friendIds = (user.friends || []).map((f) => String(f._id || f));
     const showLastSeenEveryone = (privacy.lastSeen || 'everyone') === 'everyone';
 
@@ -62,11 +61,16 @@ async function broadcastPresence(io, userId, isOnline, lastLoginAtIso) {
           io.to(fId).emit('presence:update', { userId, online: isOnline, lastLoginAt: lastLoginAtIso });
         }
       }
+      // Always tell the user's own devices their real last-seen, regardless of setting.
+      if (lastLoginAtIso && !showLastSeenEveryone) {
+        io.to(userId).emit('presence:update', { userId, online: isOnline, lastLoginAt: lastLoginAtIso });
+      }
     } else if (setting === 'friends') {
       const targetIds = new Set([userId, ...friendIds]);
       for (const tId of targetIds) {
-        const isFriend = friendIds.includes(tId) || tId === userId;
-        const showLastSeen = privacy.lastSeen === 'everyone' || (privacy.lastSeen === 'friends' && isFriend);
+        const isSelf = tId === userId;
+        const isFriend = friendIds.includes(tId);
+        const showLastSeen = isSelf || privacy.lastSeen === 'everyone' || (privacy.lastSeen === 'friends' && isFriend);
         io.to(tId).emit('presence:update', {
           userId,
           online: isOnline,
@@ -77,8 +81,9 @@ async function broadcastPresence(io, userId, isOnline, lastLoginAtIso) {
       const visibleTo = (privacy.onlineStatusVisibleTo || []).map((u) => String(u._id || u));
       const targetIds = new Set([userId, ...visibleTo]);
       for (const tId of targetIds) {
-        const isFriend = friendIds.includes(tId) || tId === userId;
-        const showLastSeen = privacy.lastSeen === 'everyone' || (privacy.lastSeen === 'friends' && isFriend);
+        const isSelf = tId === userId;
+        const isFriend = friendIds.includes(tId);
+        const showLastSeen = isSelf || privacy.lastSeen === 'everyone' || (privacy.lastSeen === 'friends' && isFriend);
         io.to(tId).emit('presence:update', {
           userId,
           online: isOnline,

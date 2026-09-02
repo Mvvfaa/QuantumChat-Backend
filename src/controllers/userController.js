@@ -13,7 +13,7 @@ import { generateTransliteratedNames } from '../services/transliterationService.
 const HEX_64 = /^[0-9a-f]{64}$/i;
 
 const PUBLIC_FIELDS =
-  'username displayName statusText bio phone birthday email publicKeys keyRotatedAt lastLoginAt blockedUsers friends avatarPath avatarMimeType privacy preferredLanguage transliteratedNames emailVerified isSystemUser systemRole verified';
+  'username displayName statusText bio phone dateOfBirth email publicKeys keyRotatedAt lastLoginAt blockedUsers friends avatarPath avatarMimeType privacy preferredLanguage transliteratedNames emailVerified isSystemUser systemRole verified';
 
 
 export async function areUsersBlocked(userAId, userBId, aBlockedUsersHint) {
@@ -70,7 +70,7 @@ export async function listUsers(req, res) {
           friendIds.has(String(u._id)) ||
           (u.privacy?.discoverable || 'everyone') !== 'nobody',
       )
-      .map((u) => u.toPublicJSON());
+      .map((u) => u.toPublicJSON(req.user._id));
 
     res.json({
       success: true,
@@ -1091,11 +1091,11 @@ async function acceptFriendRequestRecord(request, req) {
   const io = req.app.get('io');
   io?.to(String(request.from)).emit('friend:request:accepted', {
     id: request._id,
-    friend: toUser.toPublicJSON(),
+    friend: toUser.toPublicJSON(request.from),
   });
   io?.to(String(request.to)).emit('friend:request:accepted', {
     id: request._id,
-    friend: fromUser.toPublicJSON(),
+    friend: fromUser.toPublicJSON(request.to),
   });
 }
 
