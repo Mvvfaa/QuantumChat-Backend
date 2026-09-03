@@ -93,9 +93,14 @@ const notificationSettingsSchema = new mongoose.Schema(
     },
     statusNotifications: {
       type: String,
-      enum: ['all', 'favorites_only', 'off'],
+      enum: ['all', 'selected', 'off'],
       default: 'all',
     },
+    // Friend ids permitted to notify this user about their story/status
+    // updates — only meaningful when statusNotifications === 'selected'.
+    statusNotificationsSelectedFriends: [
+      { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    ],
     soundEnabled: { type: Boolean, default: true },
     soundVolume: { type: Number, min: 0, max: 100, default: 80 },
     messagePreview: {
@@ -136,6 +141,16 @@ const notificationSettingsSchema = new mongoose.Schema(
       enabled: { type: Boolean, default: true },
       soundOnWeb: { type: Boolean, default: true },
       syncReadAcrossDevices: { type: Boolean, default: true },
+    },
+    // Was never declared here despite being read/written throughout the
+    // controller and frontend — Mongoose's default strict mode silently
+    // drops any field not declared in the schema on save, so every
+    // auto-download toggle appeared to work in the UI for a moment but
+    // was never actually persisted.
+    mediaSettings: {
+      autoDownloadImages: { type: Boolean, default: true },
+      autoDownloadVideos: { type: Boolean, default: false },
+      wifiOnly: { type: Boolean, default: true },
     },
     priority: {
       type: String,

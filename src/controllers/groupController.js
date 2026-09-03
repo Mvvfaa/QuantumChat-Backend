@@ -16,7 +16,7 @@ const HEX_64 = /^[0-9a-f]{64}$/i;
 const ATTACHMENT_POPULATE =
   'filename mimetype size nonce ephemeralPublicKey targetPublicKey forSenderNonce forSenderEphemeralPublicKey forSenderTargetPublicKey encryption secretboxNonce group';
 const MEMBER_POPULATE =
-  'username email publicKeys lastLoginAt keyRotatedAt avatarPath isSystemUser systemRole verified';
+  'username email publicKeys lastLoginAt keyRotatedAt avatarPath isSystemUser systemRole verified privacy friends';
 
 function validateEnvelope(envelope) {
   return (
@@ -136,21 +136,26 @@ export async function createGroup(req, res) {
     }
 
     if (uniqueIds.length) {
-      const found = await User.find({ _id: { $in: uniqueIds } }).select('_id privacy friends');
+      const found = await User.find({ _id: { $in: uniqueIds } }).select('_id username privacy friends');
       if (found.length !== uniqueIds.length) {
         return res.status(400).json({ success: false, error: 'One or more members were not found' });
       }
+      const blocked = [];
       for (const targetUser of found) {
         const createPolicy = targetUser.privacy?.whoCanCreateGroupsWithMe || 'everyone';
         if (createPolicy === 'friends') {
           const isFriend = (targetUser.friends || []).some((f) => String(f) === String(req.user._id));
           if (!isFriend) {
-            return res.status(403).json({
-              success: false,
-              error: 'One or more users do not accept group creation from non-friends',
-            });
+            blocked.push({ id: String(targetUser._id), username: targetUser.username, reason: 'friends_only' });
           }
         }
+      }
+      if (blocked.length) {
+        return res.status(403).json({
+          success: false,
+          error: `${blocked.map((b) => b.username).join(', ')} only ${blocked.length === 1 ? 'lets' : 'let'} friends add them to new groups`,
+          blockedUsers: blocked,
+        });
       }
     }
 
@@ -742,27 +747,30 @@ export async function addMembers(req, res) {
     if (toAdd.length === 0) {
       return res.status(400).json({ success: false, error: 'No new members to add' });
     }
-    const found = await User.find({ _id: { $in: toAdd } }).select('_id privacy friends');
+    const found = await User.find({ _id: { $in: toAdd } }).select('_id username privacy friends');
     if (found.length !== toAdd.length) {
       return res.status(400).json({ success: false, error: 'One or more members were not found' });
     }
+    const blocked = [];
     for (const targetUser of found) {
       const addPolicy = targetUser.privacy?.whoCanAddToGroups || 'everyone';
       if (addPolicy === 'nobody') {
-        return res.status(403).json({
-          success: false,
-          error: 'One or more users do not accept group invites',
-        });
+        blocked.push({ id: String(targetUser._id), username: targetUser.username, reason: 'nobody' });
+        continue;
       }
       if (addPolicy === 'friends') {
         const isFriend = (targetUser.friends || []).some((f) => String(f) === String(req.user._id));
         if (!isFriend) {
-          return res.status(403).json({
-            success: false,
-            error: 'One or more users only allow friends to add them to groups',
-          });
+          blocked.push({ id: String(targetUser._id), username: targetUser.username, reason: 'friends_only' });
         }
       }
+    }
+    if (blocked.length) {
+      return res.status(403).json({
+        success: false,
+        error: `${blocked.map((b) => b.username).join(', ')} can't be added directly — share the group's invite link instead`,
+        blockedUsers: blocked,
+      });
     }
     group.members.push(...toAdd);
     await group.save();
@@ -1082,7 +1090,15 @@ export async function sendGroupMessage(req, res) {
       const senderIsAdmin = group.isAdmin(req.user._id);
       const mentionedUsers = await User.find({ _id: { $in: initialMentions } }).select('privacy friends');
       for (const targetUser of mentionedUsers) {
-        const groupPolicy = targetUser.privacy?.groupMentions || 'everyone';
+        const rawPolicy = String(targetUser.privacy?.groupMentions || 'everyone')
+          .toLowerCase()
+          .replace(/[\s_-]+/g, '');
+        const groupPolicy =
+          rawPolicy === 'noone' || rawPolicy === 'nobody' || rawPolicy === 'none'
+            ? 'nobody'
+            : rawPolicy === 'adminsonly' || rawPolicy === 'admins'
+            ? 'adminsOnly'
+            : 'everyone';
         if (groupPolicy === 'nobody') continue;
         if (groupPolicy === 'adminsOnly' && !senderIsAdmin) continue;
 
@@ -1173,15 +1189,20 @@ export async function sendGroupMessage(req, res) {
         io?.to(mid).emit('mention:new', { groupId, messageId: payload.id, from: String(req.user._id) });
       }
     }
-
     const senderId = String(req.user._id);
+    const mentionedSet = new Set(mentions.map(String));
     for (const mid of memberSet) {
       if (mid === senderId) continue;
+      const isMention = mentionedSet.has(mid);
       notifyUser(mid, {
-        title: 'QuantumChat',
-        body: isPublic ? 'New public group message' : 'New group message',
+        title: isMention ? `${req.user.username} mentioned you` : 'QuantumChat',
+        body: isMention
+          ? `You were mentioned in ${group.name}`
+          : isPublic
+            ? 'New public group message'
+            : 'New group message',
         kind: 'group',
-        isMention: mentions.map(String).includes(String(mid)),
+        isMention,
         conversationKey: `group:${groupId}`,
         url: `/chat/g/${groupId}`,
       }).catch(() => {});

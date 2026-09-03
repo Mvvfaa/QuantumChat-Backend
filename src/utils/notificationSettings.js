@@ -1,6 +1,7 @@
 export const DEFAULT_NOTIFICATION_SETTINGS = {
   messageNotifications: 'all',
   statusNotifications: 'all',
+  statusNotificationsSelectedFriends: [],
   soundEnabled: true,
   soundVolume: 80,
   messagePreview: 'full',
@@ -13,6 +14,7 @@ export const DEFAULT_NOTIFICATION_SETTINGS = {
     vibrateOnCall: true,
     missedCallReminders: true,
   },
+  mediaSettings: { autoDownloadImages: true, autoDownloadVideos: false, wifiOnly: true },
   badgeCount: 'show',
   webNotifications: { enabled: true, soundOnWeb: true, syncReadAcrossDevices: true },
   priority: 'normal',
@@ -28,6 +30,9 @@ export function normalizeNotificationSettings(raw) {
   return {
     ...DEFAULT_NOTIFICATION_SETTINGS,
     ...src,
+    statusNotificationsSelectedFriends: Array.isArray(src.statusNotificationsSelectedFriends)
+      ? src.statusNotificationsSelectedFriends.map((id) => String(id._id || id))
+      : [],
     doNotDisturb: {
       ...DEFAULT_NOTIFICATION_SETTINGS.doNotDisturb,
       ...(src.doNotDisturb || {}),
@@ -38,6 +43,10 @@ export function normalizeNotificationSettings(raw) {
     callNotifications: {
       ...DEFAULT_NOTIFICATION_SETTINGS.callNotifications,
       ...(src.callNotifications || {}),
+    },
+    mediaSettings: {
+      ...DEFAULT_NOTIFICATION_SETTINGS.mediaSettings,
+      ...(src.mediaSettings || {}),
     },
     webNotifications: {
       ...DEFAULT_NOTIFICATION_SETTINGS.webNotifications,

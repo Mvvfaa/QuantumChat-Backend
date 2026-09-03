@@ -4,11 +4,11 @@ import FriendRequest from '../models/FriendRequest.js';
 import Group from '../models/Group.js';
 import Message from '../models/Message.js';
 import User, { KEY_SET_SIZE } from '../models/User.js';
+import { generateTransliteratedNames } from '../services/transliterationService.js';
 import { conversationKey } from '../utils/conversationKey.js';
 import { normalizeNotificationSettings } from '../utils/notificationSettings.js';
 import { isEmailLike, normalizePhone, phoneLookupVariants } from '../utils/phone.js';
 import { toObjectId } from '../utils/toObjectId.js';
-import { generateTransliteratedNames } from '../services/transliterationService.js';
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
 
@@ -464,7 +464,7 @@ export async function updateNotificationSettings(req, res) {
 
     const enums = {
       messageNotifications: ['all', 'direct_only', 'all_except_reactions'],
-      statusNotifications: ['all', 'favorites_only', 'off'],
+      statusNotifications: ['all', 'selected', 'off'],
       messagePreview: ['full', 'sender_only', 'hidden'],
       vibration: ['on', 'off', 'custom'],
       groupNotifications: ['all', 'mentions_only', 'important_only', 'off'],
@@ -476,6 +476,15 @@ export async function updateNotificationSettings(req, res) {
       if (settings[key] != null && allowed.includes(settings[key])) {
         user.notificationSettings[key] = settings[key];
       }
+    }
+
+    if (Array.isArray(settings.statusNotificationsSelectedFriends)) {
+      const friendSet = new Set((user.friends || []).map((id) => String(id)));
+      // Mongoose auto-casts valid ObjectId strings assigned to a
+      // schema-typed array, so no manual ObjectId conversion is needed here.
+      user.notificationSettings.statusNotificationsSelectedFriends = settings.statusNotificationsSelectedFriends
+        .map((id) => String(id))
+        .filter((id) => friendSet.has(id));
     }
 
     if (typeof settings.soundEnabled === 'boolean') {
