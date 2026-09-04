@@ -624,14 +624,23 @@ export async function unmuteChat(req, res) {
  * The conversation, contact, and group all stay in the list; sending new
  * messages afterwards works normally. E2E ciphertext is untouched.
  */
+const CLEAR_SCOPES = ['all', 'photo', 'video', 'voice', 'document', 'text'];
+
 export async function clearConversation(req, res) {
   try {
-    const { peerId, groupId } = req.body || {};
+    const { peerId, groupId, scopes: scopesRaw } = req.body || {};
     if (!peerId && !groupId) {
       return res.status(400).json({ success: false, error: 'peerId or groupId is required' });
     }
     if (peerId && groupId) {
       return res.status(400).json({ success: false, error: 'Provide either peerId or groupId, not both' });
+    }
+
+    const scopes = Array.isArray(scopesRaw) && scopesRaw.length
+      ? [...new Set(scopesRaw.map(String))]
+      : ['all'];
+    if (scopes.some((s) => !CLEAR_SCOPES.includes(s))) {
+      return res.status(400).json({ success: false, error: 'Invalid clear scope' });
     }
 
     // For a group clear, confirm the caller is actually a member before we
@@ -657,8 +666,35 @@ export async function clearConversation(req, res) {
     const clearedAt = new Date();
 
     const user = req.user;
-    user.clearedConversations = (user.clearedConversations || []).filter((c) => c.conversationKey !== key);
-    user.clearedConversations.push({ conversationKey: key, clearedAt });
+    const already = user.clearedConversations || [];
+    // 'all' supersedes every other scope for this conversation — once
+    // everything is cleared, per-category watermarks for the same key are
+    // redundant and would only complicate later reads.
+    let nextList;
+    if (scopes.includes('all')) {
+      nextList = [
+        ...already.filter((c) => c.conversationKey !== key),
+        { conversationKey: key, scope: 'all', clearedAt },
+      ];
+    } else {
+      nextList = [
+        ...already.filter((c) => {
+          if (c.conversationKey !== key) return true;
+          // Entries with no `scope` field at all predate this feature and
+          // would otherwise be silently read as an 'all' clear forever
+          // (via the `c.scope || 'all'` fallback on the read side). Always
+          // drop them here — a scoped clear request replaces that stale,
+          // ambiguous watermark with the specific scope(s) actually asked
+          // for now. Legitimate scoped/'all' entries created *after* this
+          // feature shipped always have an explicit scope and are left
+          // alone unless the new request targets that same scope.
+          if (c.scope == null) return false;
+          return !scopes.includes(c.scope);
+        }),
+        ...scopes.map((scope) => ({ conversationKey: key, scope, clearedAt })),
+      ];
+    }
+    user.clearedConversations = nextList;
     await user.save();
 
     // Sync the clear across the user's own devices so a second logged-in
@@ -670,6 +706,7 @@ export async function clearConversation(req, res) {
         conversationKey: key,
         peerId: peerId ? String(peerId) : null,
         groupId: groupId ? String(groupId) : null,
+        scopes,
         clearedAt,
       });
     }

@@ -177,6 +177,15 @@ const clearedChatSchema = new mongoose.Schema(
   {
     conversationKey: { type: String, required: true },
     clearedAt: { type: Date, default: Date.now },
+    // Which slice of the conversation this entry hides. 'all' matches the
+    // original single-watermark behavior. Multiple scoped entries can
+    // coexist for the same conversationKey (e.g. photos cleared yesterday,
+    // videos cleared today) — each is applied independently on read.
+    scope: {
+      type: String,
+      enum: ['all', 'photo', 'video', 'voice', 'document', 'text'],
+      default: 'all',
+    },
   },
   { _id: false }
 );
@@ -601,6 +610,7 @@ userSchema.methods.toSelfJSON = function toSelfJSON() {
     clearedConversations: Array.isArray(this.clearedConversations) ? this.clearedConversations.map((c) => ({
       conversationKey: c.conversationKey,
       clearedAt: c.clearedAt,
+      scope: c.scope || 'all',
     })) : [],
     totpEnabled: Boolean(this.totpEnabled),
   };

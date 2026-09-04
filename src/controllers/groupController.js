@@ -10,7 +10,7 @@ import { notifyUser } from '../services/pushService.js';
 import { incrementCiphertextsRelayed } from '../services/blindnessStats.js';
 import { resolveExpiresAt, notExpiredFilter } from '../utils/messageExpiry.js';
 import { toObjectId } from '../utils/toObjectId.js';
-import { clearedAtFor } from '../utils/conversationKey.js';
+
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
 const ATTACHMENT_POPULATE =
@@ -99,6 +99,15 @@ function emitToMembers(io, memberIds, event, payload) {
   for (const id of memberIds) {
     io.to(String(id)).emit(event, payload);
   }
+}
+
+// Same rule as messageController.js's version — hides messages at/before
+// clearedAt, narrowed to a media category (or, for 'text', no attachment).
+function scopeCreatedAtCondition(scope, clearedAt) {
+  const base = { createdAt: { $lte: clearedAt } };
+  if (scope === 'all') return base;
+  if (scope === 'text') return { ...base, mediaCategory: { $exists: false } };
+  return { ...base, mediaCategory: scope };
 }
 
 async function loadGroup(id) {
@@ -1129,32 +1138,33 @@ export async function sendGroupMessage(req, res) {
       forwardPolicy = { allowForward, ...(forwardUntil ? { forwardUntil } : {}) };
     }
 
+    let mediaCategory;
+    if (attachmentId) {
+      const Attachment = (await import('../models/Attachment.js')).default;
+      const attachmentDoc = await Attachment.findById(toObjectId(attachmentId)).select('mimetype filename');
+      const mime = String(attachmentDoc?.mimetype || '').toLowerCase();
+      const name = String(attachmentDoc?.filename || '').toLowerCase();
+      if (mime.startsWith('audio/') || /\.(webm|ogg|mp3|m4a|wav|aac)$/i.test(name) || /^voice-note/i.test(name)) {
+        mediaCategory = 'voice';
+      } else if (mime.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp)$/i.test(name)) {
+        mediaCategory = 'photo';
+      } else if (mime.startsWith('video/') || /\.(mp4|webm|mov|mkv|avi)$/i.test(name)) {
+        mediaCategory = 'video';
+      } else {
+        mediaCategory = 'document';
+      }
+    }
+
     let viewOnce = viewOnceRaw === true;
     let viewOnceMediaKind;
     if (viewOnce) {
-      const viewOnceAttachmentOid = toObjectId(attachmentId);
-      if (!viewOnceAttachmentOid) {
+      if (!attachmentId || !['photo', 'video', 'voice'].includes(mediaCategory)) {
         return res.status(400).json({
           success: false,
           error: 'View once is only available for photo, video, or voice attachments',
         });
       }
-      const Attachment = (await import('../models/Attachment.js')).default;
-      const attachment = await Attachment.findById(viewOnceAttachmentOid);
-      const mime = String(attachment?.mimetype || '').toLowerCase();
-      const name = String(attachment?.filename || '').toLowerCase();
-      if (mime.startsWith('audio/') || /\.(webm|ogg|mp3|m4a|wav|aac)$/i.test(name) || /^voice-note/i.test(name)) {
-        viewOnceMediaKind = 'audio';
-      } else if (mime.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp)$/i.test(name)) {
-        viewOnceMediaKind = 'image';
-      } else if (mime.startsWith('video/') || /\.(mp4|webm|mov|mkv|avi)$/i.test(name)) {
-        viewOnceMediaKind = 'video';
-      } else {
-        return res.status(400).json({
-          success: false,
-          error: 'View once is only available for photo, video, or voice attachments',
-        });
-      }
+      viewOnceMediaKind = mediaCategory === 'photo' ? 'image' : mediaCategory === 'voice' ? 'audio' : 'video';
       forwardPolicy = { allowForward: false };
     }
 
@@ -1163,6 +1173,7 @@ export async function sendGroupMessage(req, res) {
       group: group._id,
       ...(isPublic ? { content } : { envelopes: normalized }),
       attachment: attachmentId || undefined,
+      mediaCategory,
       replyTo: replyToId,
       kind: messageKind,
       mentionedUserIds: mentions,
@@ -1345,12 +1356,16 @@ export async function getGroupMessages(req, res) {
       filter.$and.push({ createdAt: { $lt: before } });
     }
 
-    // "Clear chat" watermark: hide messages this member cleared for themselves
-    // (created at or before the clear moment). Per-user only — other members'
-    // views and the group itself are untouched, and new messages still appear.
-    const groupClearedAt = clearedAtFor(req.user.clearedConversations, `group:${groupOid}`);
-    if (groupClearedAt) {
-      filter.$and.push({ createdAt: { $gt: groupClearedAt } });
+    // "Clear chat" watermarks: hide messages this member cleared for
+    // themselves, scoped by media category (or all). Per-user only — other
+    // members' views and the group itself are untouched, and new messages
+    // after each scope's clear moment still appear normally.
+    const groupClearKey = `group:${groupOid}`;
+    const groupClearExclusions = (req.user.clearedConversations || [])
+      .filter((c) => c.conversationKey === groupClearKey && c.clearedAt)
+      .map((c) => scopeCreatedAtCondition(c.scope || 'all', new Date(c.clearedAt)));
+    if (groupClearExclusions.length) {
+      filter.$and.push({ $nor: groupClearExclusions });
     }
 
     const rows = await Message.find(filter)

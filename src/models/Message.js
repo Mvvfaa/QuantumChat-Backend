@@ -84,6 +84,14 @@ const messageSchema = new mongoose.Schema(
       enum: ['text', 'announcement', 'poll', 'event', 'file', 'ai', 'ai_note', 'system'],
       default: 'text',
     },
+    // Attachment category snapshot at send time — lets "Clear chat" filter by
+    // photo/video/voice/document without joining Attachment on every read.
+    // Absent (undefined) for messages with no attachment (plain text).
+    mediaCategory: {
+      type: String,
+      enum: ['photo', 'video', 'voice', 'document'],
+      default: undefined,
+    },
     mentionedUserIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     aiMetadata: {
       contentHash: { type: String, match: /^[0-9a-f]{64}$/i },
