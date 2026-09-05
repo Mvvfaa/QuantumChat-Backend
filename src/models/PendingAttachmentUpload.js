@@ -26,6 +26,15 @@ const pendingAttachmentUploadSchema = new mongoose.Schema({
   recipientStoragePath: { type: String },
   senderStoragePath: { type: String },
 
+  // Chunked-upload progress (large files only — see attachmentRoutes.js
+  // PUT /pending/:id/chunk). Absent/0 for the existing single-shot path.
+  recipientChunksReceived: { type: Number, default: 0 },
+  recipientTotalChunks: { type: Number },
+  recipientTempPath: { type: String },
+  senderChunksReceived: { type: Number, default: 0 },
+  senderTotalChunks: { type: Number },
+  senderTempPath: { type: String },
+
   // DM sealed-box fields
   nonce: { type: String },
   ephemeralPublicKey: { type: String, match: HEX_64 },

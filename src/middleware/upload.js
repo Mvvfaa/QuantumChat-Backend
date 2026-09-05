@@ -1,8 +1,8 @@
 import crypto from 'crypto';
+import express from 'express';
 import multer from 'multer';
 import path from 'path';
 import { getStorage, getStorageProviderName } from '../storage/index.js';
-
 /** Raster images only — SVG is rejected (scriptable when opened as a document). */
 export const SAFE_IMAGE_MIMES = new Set([
   'image/jpeg',
@@ -39,7 +39,19 @@ function rasterImageFilter(label) {
 // Memory staging only — durable blobs go to Cloudinary via getStorage().
 const memory = multer.memoryStorage();
 
-export const MAX_ATTACHMENT_SIZE = 15 * 1024 * 1024;
+// 100MB total ceiling for a finished attachment. Large files never hit this
+// as a single request body — see chunkUpload below — this only caps the
+// assembled size once all chunks land.
+export const MAX_ATTACHMENT_SIZE = 100 * 1024 * 1024;
+
+// One chunk of an in-progress large upload. Kept well under Vercel's
+// serverless request-body ceiling. Raw binary body, not multipart — the
+// filename/mimetype are already known from /attachments/init.
+export const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB per request
+export const chunkUpload = express.raw({
+  type: 'application/octet-stream',
+  limit: CHUNK_SIZE + 1024, // small slack for safety, not a second chunk
+});
 
 // Used for the attachment "proxy" upload path (see attachmentController.js
 // init/finalize) — bytes are staged in memory here, then handed to
