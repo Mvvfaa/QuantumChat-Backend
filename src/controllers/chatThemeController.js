@@ -1,5 +1,6 @@
 import ChatTheme from '../models/ChatTheme.js';
 import User from '../models/User.js';
+import Group from '../models/Group.js';
 import { toObjectId } from '../utils/toObjectId.js';
 import { getStorage, newObjectName, safeImageContentType } from '../middleware/upload.js';
 import {
@@ -11,7 +12,31 @@ import {
   CUSTOM_WALLPAPER_ID,
 } from '../utils/chatThemePresets.js';
 
-function requirePeerId(req, res) {
+/**
+ * Resolves which conversation a theme request targets — a 1:1 peer or a
+ * group — validates it (peer exists / caller is a group member), and
+ * returns { field: 'peer' | 'group', id }. Sends its own error response and
+ * returns null on any failure, so callers just `if (!scope) return;`.
+ */
+async function resolveScope(req, res) {
+  if (req.params.groupId !== undefined) {
+    const groupId = toObjectId(req.params.groupId);
+    if (!groupId) {
+      res.status(400).json({ success: false, error: 'Invalid group id' });
+      return null;
+    }
+    const group = await Group.findById(groupId).select('members');
+    if (!group) {
+      res.status(404).json({ success: false, error: 'Group not found' });
+      return null;
+    }
+    if (!group.isMember(req.user._id)) {
+      res.status(403).json({ success: false, error: 'Not a group member' });
+      return null;
+    }
+    return { field: 'group', id: groupId };
+  }
+
   const peerId = toObjectId(req.params.peerId);
   if (!peerId) {
     res.status(400).json({ success: false, error: 'Invalid peer id' });
@@ -21,78 +46,69 @@ function requirePeerId(req, res) {
     res.status(400).json({ success: false, error: 'Cannot set a chat theme with yourself' });
     return null;
   }
-  return peerId;
-}
-
-async function requirePeerExists(peerId, res) {
   const exists = await User.exists({ _id: peerId });
   if (!exists) {
     res.status(404).json({ success: false, error: 'User not found' });
-    return false;
+    return null;
   }
-  return true;
+  return { field: 'peer', id: peerId };
 }
 
-const DEFAULT_THEME_JSON = (peerId) => ({
-  peer: peerId,
-  presetId: null,
-  bubbleColorId: 'default',
-  wallpaperId: 'none',
-  hasCustomWallpaper: false,
-  updatedAt: null,
-});
+function scopeFilter(ownerId, scope) {
+  return { owner: ownerId, [scope.field]: scope.id };
+}
+
+function defaultThemeJSON(scope) {
+  return {
+    peer: scope.field === 'peer' ? scope.id : null,
+    group: scope.field === 'group' ? scope.id : null,
+    presetId: null,
+    bubbleColorId: 'default',
+    wallpaperId: 'none',
+    hasCustomWallpaper: false,
+    updatedAt: null,
+  };
+}
 
 // GET /api/chat-themes/presets
-// Static catalog the frontend renders the picker from — fetched once
-// rather than hard-coded twice (backend validation + frontend UI).
 export async function listPresets(req, res) {
   res.json({ success: true, data: getCatalog() });
 }
 
-// GET /api/chat-themes/:peerId
-// Returns the caller's saved theme for that conversation, or the default
-// if they've never set one.
+// GET /api/chat-themes/:peerId  |  GET /api/chat-themes/group/:groupId
 export async function getChatTheme(req, res) {
-  const peerId = requirePeerId(req, res);
-  if (!peerId) return;
+  const scope = await resolveScope(req, res);
+  if (!scope) return;
 
-  const theme = await ChatTheme.findOne({ owner: req.user._id, peer: peerId });
+  const theme = await ChatTheme.findOne(scopeFilter(req.user._id, scope));
   if (!theme) {
-    return res.json({ success: true, data: DEFAULT_THEME_JSON(peerId) });
+    return res.json({ success: true, data: defaultThemeJSON(scope) });
   }
   res.json({ success: true, data: theme.toPublicJSON() });
 }
 
-// PUT /api/chat-themes/:peerId
-// Body is EITHER:
-//   { presetId }                    -> apply a top-grid combo theme
-//   { bubbleColorId, wallpaperId }  -> independent "Customize" picks
-// wallpaperId here must be a named preset — clients switch to a custom
-// wallpaper only via POST .../wallpaper (see below), which sets it for them.
+// PUT /api/chat-themes/:peerId  |  PUT /api/chat-themes/group/:groupId
 export async function setChatTheme(req, res) {
-  const peerId = requirePeerId(req, res);
-  if (!peerId) return;
-  if (!(await requirePeerExists(peerId, res))) return;
+  const scope = await resolveScope(req, res);
+  if (!scope) return;
 
   const { presetId, bubbleColorId, wallpaperId } = req.body;
+  const filter = scopeFilter(req.user._id, scope);
 
-  const mongoUpdate = { $set: {}, $unset: {} };
+  const mongoUpdate = { $set: { [scope.field]: scope.id }, $unset: {} };
   if (presetId !== undefined) {
     if (!isValidPresetId(presetId)) {
       return res.status(400).json({ success: false, error: 'Unknown presetId' });
     }
     const preset = getPresetById(presetId);
-    mongoUpdate.$set = { presetId: preset.id, bubbleColorId: preset.bubbleColorId, wallpaperId: preset.wallpaperId };
-    // Picking a named preset always drops any previously uploaded custom
-    // wallpaper file (delete-then-clear, mirroring uploadAvatar's swap).
+    mongoUpdate.$set = {
+      ...mongoUpdate.$set,
+      presetId: preset.id,
+      bubbleColorId: preset.bubbleColorId,
+      wallpaperId: preset.wallpaperId,
+    };
     mongoUpdate.$unset = { wallpaperPath: 1, wallpaperStorageProvider: 1, wallpaperMimeType: 1 };
   } else {
-    // Bubble color and wallpaper can now be updated independently — only
-    // validate/apply whichever field was actually sent. This is what makes
-    // "change bubble color while a custom wallpaper is active" work: the
-    // client omits wallpaperId entirely rather than re-sending 'custom'
-    // (which this endpoint intentionally rejects — custom wallpapers are
-    // only set via POST /:peerId/wallpaper).
     if (bubbleColorId === undefined && wallpaperId === undefined) {
       return res.status(400).json({
         success: false,
@@ -105,27 +121,22 @@ export async function setChatTheme(req, res) {
     if (wallpaperId !== undefined && !isValidWallpaperId(wallpaperId)) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid wallpaperId (use POST /:peerId/wallpaper to set a custom image)',
+        error: 'Invalid wallpaperId (use the wallpaper upload route to set a custom image)',
       });
     }
 
-    mongoUpdate.$set = {};
     mongoUpdate.$unset = { presetId: 1 };
     if (bubbleColorId !== undefined) mongoUpdate.$set.bubbleColorId = bubbleColorId;
     if (wallpaperId !== undefined) {
       mongoUpdate.$set.wallpaperId = wallpaperId;
-      // Switching to a named wallpaper drops any previously uploaded
-      // custom image's file reference. If wallpaperId wasn't part of this
-      // request at all (e.g. just changing bubble color), the existing
-      // custom wallpaper — and its file — are left completely untouched.
       mongoUpdate.$unset.wallpaperPath = 1;
       mongoUpdate.$unset.wallpaperStorageProvider = 1;
       mongoUpdate.$unset.wallpaperMimeType = 1;
     }
   }
 
-  const previous = await ChatTheme.findOne({ owner: req.user._id, peer: peerId });
-  const theme = await ChatTheme.findOneAndUpdate({ owner: req.user._id, peer: peerId }, mongoUpdate, {
+  const previous = await ChatTheme.findOne(filter);
+  const theme = await ChatTheme.findOneAndUpdate(filter, mongoUpdate, {
     new: true,
     upsert: true,
     setDefaultsOnInsert: true,
@@ -135,21 +146,17 @@ export async function setChatTheme(req, res) {
     try {
       await getStorage().delete(previous.wallpaperPath);
     } catch {
-      // best-effort — an orphaned storage object isn't worth failing the request over
+      // best-effort
     }
   }
 
   res.json({ success: true, data: theme.toPublicJSON() });
 }
 
-// POST /api/chat-themes/:peerId/wallpaper  (multipart, field name 'wallpaper')
-// Uploads a custom wallpaper image for this conversation, replacing any
-// previous custom wallpaper. Sets wallpaperId to the 'custom' sentinel and
-// clears presetId, same as picking any other wallpaper would.
+// POST /api/chat-themes/:peerId/wallpaper  |  POST /api/chat-themes/group/:groupId/wallpaper
 export async function uploadWallpaper(req, res) {
-  const peerId = requirePeerId(req, res);
-  if (!peerId) return;
-  if (!(await requirePeerExists(peerId, res))) return;
+  const scope = await resolveScope(req, res);
+  if (!scope) return;
 
   if (!req.file?.buffer) {
     return res.status(400).json({ success: false, error: 'Image file is required' });
@@ -170,12 +177,14 @@ export async function uploadWallpaper(req, res) {
       String(req.user._id)
     );
 
-    const previous = await ChatTheme.findOne({ owner: req.user._id, peer: peerId });
+    const filter = scopeFilter(req.user._id, scope);
+    const previous = await ChatTheme.findOne(filter);
 
     const theme = await ChatTheme.findOneAndUpdate(
-      { owner: req.user._id, peer: peerId },
+      filter,
       {
         $set: {
+          [scope.field]: scope.id,
           wallpaperId: CUSTOM_WALLPAPER_ID,
           wallpaperPath: stored.key,
           wallpaperStorageProvider: stored.provider,
@@ -200,16 +209,13 @@ export async function uploadWallpaper(req, res) {
   }
 }
 
-// GET /api/chat-themes/:peerId/wallpaper
-// Streams the caller's own uploaded wallpaper image. Owner-only — this is a
-// personal display asset, not something shared with the peer, so there is
-// no "is this my conversation too" branch the way group photos have.
+// GET /api/chat-themes/:peerId/wallpaper  |  GET /api/chat-themes/group/:groupId/wallpaper
 export async function getWallpaperImage(req, res) {
-  const peerId = requirePeerId(req, res);
-  if (!peerId) return;
+  const scope = await resolveScope(req, res);
+  if (!scope) return;
 
   try {
-    const theme = await ChatTheme.findOne({ owner: req.user._id, peer: peerId }).select(
+    const theme = await ChatTheme.findOne(scopeFilter(req.user._id, scope)).select(
       'wallpaperPath wallpaperMimeType'
     );
     if (!theme?.wallpaperPath) {
@@ -228,15 +234,13 @@ export async function getWallpaperImage(req, res) {
   }
 }
 
-// DELETE /api/chat-themes/:peerId/wallpaper
-// Clears only the custom wallpaper, falling back to the 'none' wallpaper
-// while leaving the chosen bubble color untouched. Distinct from the full
-// DELETE /:peerId reset below.
+// DELETE /api/chat-themes/:peerId/wallpaper  |  DELETE /api/chat-themes/group/:groupId/wallpaper
 export async function deleteWallpaperImage(req, res) {
-  const peerId = requirePeerId(req, res);
-  if (!peerId) return;
+  const scope = await resolveScope(req, res);
+  if (!scope) return;
 
-  const theme = await ChatTheme.findOne({ owner: req.user._id, peer: peerId });
+  const filter = scopeFilter(req.user._id, scope);
+  const theme = await ChatTheme.findOne(filter);
   if (theme?.wallpaperPath) {
     try {
       await getStorage().delete(theme.wallpaperPath);
@@ -251,17 +255,16 @@ export async function deleteWallpaperImage(req, res) {
     return res.json({ success: true, data: theme.toPublicJSON() });
   }
 
-  res.json({ success: true, data: theme ? theme.toPublicJSON() : DEFAULT_THEME_JSON(peerId) });
+  res.json({ success: true, data: theme ? theme.toPublicJSON() : defaultThemeJSON(scope) });
 }
 
-// DELETE /api/chat-themes/:peerId
-// Reverts the whole conversation theme (bubble + wallpaper) back to
-// default for the caller only, deleting any uploaded wallpaper file too.
+// DELETE /api/chat-themes/:peerId  |  DELETE /api/chat-themes/group/:groupId
 export async function resetChatTheme(req, res) {
-  const peerId = requirePeerId(req, res);
-  if (!peerId) return;
+  const scope = await resolveScope(req, res);
+  if (!scope) return;
 
-  const theme = await ChatTheme.findOne({ owner: req.user._id, peer: peerId });
+  const filter = scopeFilter(req.user._id, scope);
+  const theme = await ChatTheme.findOne(filter);
   if (theme?.wallpaperPath) {
     try {
       await getStorage().delete(theme.wallpaperPath);
@@ -269,6 +272,6 @@ export async function resetChatTheme(req, res) {
       // best-effort
     }
   }
-  await ChatTheme.deleteOne({ owner: req.user._id, peer: peerId });
-  res.json({ success: true, data: DEFAULT_THEME_JSON(peerId) });
+  await ChatTheme.deleteOne(filter);
+  res.json({ success: true, data: defaultThemeJSON(scope) });
 }
