@@ -63,7 +63,7 @@ export async function createStory(req, res) {
     const mimetype = sealed && declaredMime ? declaredMime : req.file.mimetype;
     const mediaType =
       mediaTypeFromMime(mimetype) ||
-      (['image', 'video', 'audio'].includes(String(req.body.mediaType || ''))
+      (['image', 'video', 'audio', 'text'].includes(String(req.body.mediaType || ''))
         ? String(req.body.mediaType)
         : null);
 
@@ -214,7 +214,14 @@ export async function listStories(req, res) {
         if (!allowed) continue;
       }
       filtered.push({
-        ...story.toPublicJSON(),
+        ...(() => {
+          const pub = story.toPublicJSON();
+          // Only ship this viewer's envelope — smaller list payload, faster unlock.
+          if (pub.sealed && Array.isArray(pub.envelopes)) {
+            pub.envelopes = pub.envelopes.filter((e) => String(e.user) === viewerId);
+          }
+          return pub;
+        })(),
         user: {
           id: ownerId,
           username: story.user?.username || 'User',
@@ -408,7 +415,7 @@ export async function deleteStory(req, res) {
       return res.status(403).json({ success: false, error: 'Not authorized' });
     }
     try {
-      await getStorage().delete(story.storagePath);
+      if (story.storagePath) await getStorage().delete(story.storagePath);
     } catch {
       // ignore
     }

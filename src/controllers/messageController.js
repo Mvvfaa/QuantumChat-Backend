@@ -115,7 +115,17 @@ function attachmentCategory(attachment) {
 function scopeCreatedAtCondition(scope, clearedAt) {
   const base = { createdAt: { $lte: clearedAt } };
   if (scope === 'all') return base;
-  if (scope === 'text') return { ...base, mediaCategory: { $exists: false } };
+  if (scope === 'text') {
+    // Plain text only — must not treat legacy media (no mediaCategory field)
+    // as text, or a "Text messages" clear would wipe the whole chat.
+    return {
+      ...base,
+      $and: [
+        { $or: [{ attachment: { $exists: false } }, { attachment: null }] },
+        { $or: [{ mediaCategory: { $exists: false } }, { mediaCategory: null }] },
+      ],
+    };
+  }
   return { ...base, mediaCategory: scope };
 }
 function toClientMessage(doc) {

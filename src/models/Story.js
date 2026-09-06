@@ -20,18 +20,26 @@ const storyEnvelopeSchema = new mongoose.Schema(
 const storySchema = new mongoose.Schema(
   {
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-    mediaType: { type: String, enum: ['image', 'video', 'audio'], required: true },
+    mediaType: { type: String, enum: ['image', 'video', 'audio', 'text'], required: true },
     filename: { type: String, required: true },
     mimetype: { type: String, required: true },
     size: { type: Number, required: true },
-    storagePath: { type: String, required: true },
+    storagePath: { type: String, default: '' },
     storageProvider: {
       type: String,
-      enum: ['local', 'cloudinary', 'memory'],
+      enum: ['local', 'cloudinary', 'memory', 'none'],
       default: 'cloudinary',
     },
     durationMs: { type: Number, default: 0, max: MAX_DURATION_MS },
     caption: { type: String, maxlength: 200, default: '' },
+    /** Plaintext status body (unsealed text stories only). */
+    textContent: { type: String, maxlength: 700, default: '' },
+    /** Visual style for text stories. */
+    textStyle: {
+      background: { type: String, maxlength: 40, default: '' },
+      font: { type: String, maxlength: 40, default: '' },
+      align: { type: String, enum: ['', 'left', 'center', 'right'], default: '' },
+    },
     expiresAt: { type: Date, required: true, index: true },
     sealed: { type: Boolean, default: false },
      allowReplies: { type: Boolean, default: true },
@@ -70,6 +78,15 @@ storySchema.methods.toPublicJSON = function toPublicJSON() {
     size: this.size,
     durationMs: this.durationMs || 0,
     caption: this.caption || '',
+    textContent: this.mediaType === 'text' && !this.sealed ? this.textContent || '' : '',
+    textStyle:
+      this.mediaType === 'text'
+        ? {
+            background: this.textStyle?.background || '',
+            font: this.textStyle?.font || '',
+            align: this.textStyle?.align || 'center',
+          }
+        : undefined,
     createdAt: this.createdAt,
     expiresAt: this.expiresAt,
     sealed: Boolean(this.sealed),

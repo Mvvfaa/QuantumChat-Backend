@@ -30,6 +30,7 @@ import {
   muteChat,
   unmuteChat,
   clearConversation,
+  undoClearConversation,
 } from '../controllers/userController.js';
 import {
   getPushVapidPublicKey,
@@ -78,6 +79,7 @@ router.put('/me/notification-settings', updateNotificationSettings);
 router.post('/me/mute', muteChat);
 router.post('/me/unmute', unmuteChat);
 router.post('/me/clear-chat', clearConversation);
+router.post('/me/clear-chat/undo', undoClearConversation);
 router.get('/me/blocked', listBlockedUsers);
 router.get('/me/export', exportAccountData);
 router.delete('/me', deleteAccount);
