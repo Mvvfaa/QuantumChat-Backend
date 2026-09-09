@@ -83,7 +83,9 @@ export const wallpaperUpload = multer({
 
 export const storyUpload = multer({
   storage: memory,
-  limits: { fileSize: 40 * 1024 * 1024 },
+  // Phone videos are often large; client compresses first, but leave headroom
+  // for sealed ciphertext and short uncompressed clips.
+  limits: { fileSize: 100 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const type = String(file.mimetype || '').toLowerCase();
     const ext = path.extname(file.originalname || '').toLowerCase();
@@ -100,6 +102,33 @@ export const storyUpload = multer({
     }
     cb(new Error('Story must be an image, video, or audio file'));
   },
+});
+
+export const highlightUpload = multer({
+  storage: memory,
+  limits: { fileSize: 40 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const type = String(file.mimetype || '').toLowerCase();
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    if (type === 'image/svg+xml' || ext === '.svg') {
+      return cb(new Error('SVG highlights are not allowed'));
+    }
+    if (
+      SAFE_IMAGE_MIMES.has(type) ||
+      type.startsWith('video/') ||
+      type.startsWith('audio/') ||
+      type === 'application/octet-stream'
+    ) {
+      return cb(null, true);
+    }
+    cb(new Error('Highlight must be an image, video, or audio file'));
+  },
+});
+
+export const highlightCoverUpload = multer({
+  storage: memory,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: rasterImageFilter('Highlight cover'),
 });
 
 /** Display / storage object name helper (not a filesystem path). */

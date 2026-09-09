@@ -27,6 +27,28 @@ export const apiLimiter = rateLimit({
 });
 
 /**
+ * Dedicated budget for attachment uploads. A single photo already costs
+ * 3 requests (init, bytes, finalize) before the /messages POST that
+ * attaches it, and a large batch send (e.g. picking many photos at once)
+ * multiplies that — the general apiLimiter's 120/min caps out well before
+ * a real multi-photo send finishes, so uploads would fail partway with
+ * silent 429s. Keyed by user like syncLimiter, so one account's big send
+ * doesn't starve others behind the same IP/NAT.
+ */
+export const attachmentLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 1000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.method === "OPTIONS",
+  keyGenerator: (req) => String(req.user._id),
+  message: {
+    success: false,
+    error: "Too many upload requests, please try again shortly",
+  },
+});
+
+/**
  * Dedicated budget for realtime message polling. This route mounts after
  * requireAuth, so key by user rather than IP to avoid users behind one NAT
  * consuming each other's polling allowance.

@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import mongoose from 'mongoose';
 import { allowedOrigins } from './config/corsOrigins.js';
 import { runBirthdayNotifications } from './jobs/birthdayNotifications.js';
+import { runStoryPublishJobs } from './jobs/publishScheduledStories.js';
 import { publicApiIpLimiter } from './middleware/apiKeyAuth.js';
 import { authLimiter } from './middleware/rateLimiter.js';
 import activityRoutes from './routes/activityRoutes.js';
@@ -14,6 +15,7 @@ import chatThemeRoutes from './routes/chatThemeRoutes.js';
 import deviceLinkRoutes from './routes/deviceLinkRoutes.js';
 import gifRoutes from './routes/gifRoutes.js';
 import groupRoutes from './routes/groupRoutes.js';
+import highlightRoutes from './routes/highlightRoutes.js';
 import messageRoutes from './routes/messageRoutes.js';
 import presenceRoutes from './routes/presenceRoutes.js';
 import publicApiRoutes from './routes/publicApiRoutes.js';
@@ -109,6 +111,21 @@ app.use('/api/activity', activityRoutes);
       }
     });
 
+    app.get('/api/cron/stories-publish', async (req, res) => {
+      const provided = req.headers['x-cron-secret'] || req.query.secret;
+      if (!process.env.CRON_SECRET || provided !== process.env.CRON_SECRET) {
+        return res.status(401).json({ success: false, error: 'Unauthorized' });
+      }
+      try {
+        const io = req.app.get('io');
+        const publishedCount = await runStoryPublishJobs(io);
+        res.json({ success: true, data: { publishedCount } });
+      } catch (err) {
+        console.error('Story publish cron failed:', err.message);
+        res.status(500).json({ success: false, error: 'Sweep failed' });
+      }
+    });
+
   // Skip rate limiting on CORS preflight — OPTIONS must always be cheap/fast.
   app.use('/api/auth', (req, res, next) => {
     if (req.method === 'OPTIONS') return next();
@@ -120,6 +137,7 @@ app.use('/api/activity', activityRoutes);
   app.use('/api/attachments', attachmentRoutes);
   app.use('/api/groups', groupRoutes);
   app.use('/api/stories', storyRoutes);
+  app.use('/api/highlights', highlightRoutes);
   app.use('/api/reports', reportRoutes);
   app.use('/api/trust', trustRoutes);
   app.use('/api/call-signals', callSignalRoutes);
@@ -146,7 +164,10 @@ app.use('/api/activity', activityRoutes);
       });
     }
     if (err?.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({ success: false, error: 'File too large' });
+      return res.status(400).json({
+        success: false,
+        error: 'File too large — status videos must be under 100MB (try a shorter clip)',
+      });
     }
     if (err?.name === 'MulterError') {
       return res.status(400).json({ success: false, error: err.message || 'Upload failed' });

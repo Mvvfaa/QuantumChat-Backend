@@ -17,7 +17,7 @@ const privacySchema = new mongoose.Schema(
     online: { type: String, enum: ['everyone', 'nobody'], default: 'everyone' },
     onlineStatus: {
       type: String,
-      enum: ['everyone', 'friends', 'selected'],
+      enum: ['everyone', 'friends', 'selected', 'no one '],
       default: 'everyone',
     },
     onlineStatusVisibleTo: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
