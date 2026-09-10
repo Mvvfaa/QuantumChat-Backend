@@ -25,6 +25,7 @@ import {
   removeFriend,
   getMe,
   getMyPublicKeys,
+  getMyReferrals,
   getNotificationSettings,
   updateNotificationSettings,
   muteChat,
@@ -91,6 +92,7 @@ router.post('/me/sessions/link/approve', approveLinkRequest);
 router.post('/me/sessions/link/reject', rejectLinkRequest);
 router.post('/me/sessions/link/email', sendLinkEmail);
 router.delete('/me/sessions/:sessionId', revokeSession);
+router.get('/me/referrals', getMyReferrals);
 router.get('/me/vault', getVault);
 router.put('/me/vault', putVault);
 router.delete('/me/vault', deleteVault);

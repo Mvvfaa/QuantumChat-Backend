@@ -27,8 +27,11 @@ function parseStoryStatus(raw) {
 
 function clampTtlMs(raw) {
   let ttlMs = Number(raw || 0);
-  if (!Number.isFinite(ttlMs) || ttlMs <= 0) ttlMs = Story.ttlMs;
-  return Math.min(Math.max(ttlMs, Story.minTtlMs), Story.maxTtlMs);
+  const fallback = Story?.ttlMs || 24 * 60 * 60 * 1000;
+  const min = Story?.minTtlMs || 15 * 60 * 1000;
+  const max = Story?.maxTtlMs || 7 * 24 * 60 * 60 * 1000;
+  if (!Number.isFinite(ttlMs) || ttlMs <= 0) ttlMs = fallback;
+  return Math.min(Math.max(ttlMs, min), max);
 }
 
 function parsePublishAt(raw) {
@@ -391,10 +394,10 @@ export async function reshareStory(req, res) {
       return res.status(400).json({ success: false, error: 'Story is still active' });
     }
 
-    if (req.body.ttlMs !== undefined) {
+    if (req.body?.ttlMs !== undefined) {
       story.ttlMs = clampTtlMs(req.body.ttlMs);
     }
-    story.expiresAt = new Date(Date.now() + (story.ttlMs || Story.ttlMs));
+    story.expiresAt = new Date(Date.now() + (story.ttlMs || Story.ttlMs || 24 * 60 * 60 * 1000));
     await story.save();
 
     const payload = storyOwnerPayload(story, req.user);
@@ -563,20 +566,20 @@ export async function updateStory(req, res) {
       return res.status(400).json({ success: false, error: 'Only drafts or scheduled stories can be edited' });
     }
 
-    if (req.body.ttlMs !== undefined) {
+    if (req.body?.ttlMs !== undefined) {
       story.ttlMs = clampTtlMs(req.body.ttlMs);
     }
-    if (req.body.allowReplies !== undefined) {
+    if (req.body?.allowReplies !== undefined) {
       story.allowReplies = parseSealedFlag(req.body.allowReplies);
     }
-    if (!story.sealed && typeof req.body.caption === 'string') {
+    if (!story.sealed && typeof req.body?.caption === 'string') {
       story.caption = req.body.caption.trim().slice(0, 200);
     }
 
-    const nextStatus = req.body.status !== undefined ? parseStoryStatus(req.body.status) : story.status;
+    const nextStatus = req.body?.status !== undefined ? parseStoryStatus(req.body.status) : story.status;
     if (!nextStatus || nextStatus === 'published') {
       // Publishing goes through publishStory
-      if (req.body.status === 'published') {
+      if (req.body?.status === 'published') {
         return res.status(400).json({
           success: false,
           error: 'Use POST /stories/:id/publish to publish',
@@ -593,7 +596,7 @@ export async function updateStory(req, res) {
       story.expiresAt = new Date(Date.now() + Story.draftRetentionMs);
     } else if (nextStatus === 'scheduled') {
       const publishAt =
-        req.body.publishAt !== undefined ? parsePublishAt(req.body.publishAt) : story.publishAt;
+        req.body?.publishAt !== undefined ? parsePublishAt(req.body.publishAt) : story.publishAt;
       if (!publishAt || publishAt.getTime() <= Date.now() + 30_000) {
         return res.status(400).json({
           success: false,
@@ -602,7 +605,7 @@ export async function updateStory(req, res) {
       }
       story.status = 'scheduled';
       story.publishAt = publishAt;
-      story.expiresAt = new Date(publishAt.getTime() + story.ttlMs);
+      story.expiresAt = new Date(publishAt.getTime() + (story.ttlMs || Story.ttlMs));
     }
 
     await story.save();
@@ -628,17 +631,18 @@ export async function publishStory(req, res) {
       return res.status(400).json({ success: false, error: 'Story is already published' });
     }
 
-    if (req.body.ttlMs !== undefined) {
+    if (req.body?.ttlMs !== undefined) {
       story.ttlMs = clampTtlMs(req.body.ttlMs);
     }
-    if (req.body.allowReplies !== undefined) {
+    if (req.body?.allowReplies !== undefined) {
       story.allowReplies = parseSealedFlag(req.body.allowReplies);
     }
 
     const now = Date.now();
+    const ttl = story.ttlMs || Story.ttlMs || 24 * 60 * 60 * 1000;
     story.status = 'published';
     story.publishAt = new Date(now);
-    story.expiresAt = new Date(now + (story.ttlMs || Story.ttlMs));
+    story.expiresAt = new Date(now + ttl);
     await story.save();
 
     const payload = storyOwnerPayload(story, req.user);

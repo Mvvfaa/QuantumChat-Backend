@@ -1059,6 +1059,36 @@ export async function reactToMessage(req, res) {
       emitToParticipants(io, message, 'message:reaction', payload);
     }
 
+     if (!clear) {
+      const reactorId = req.user._id.toString();
+      if (groupMemberIds) {
+        for (const memberId of groupMemberIds) {
+          if (memberId === reactorId) continue;
+          notifyUser(memberId, {
+            title: 'QuantumChat',
+            body: 'New reaction',
+            kind: 'reaction',
+            conversationKey: `group:${message.group}`,
+            url: `/chat/g/${message.group}`,
+            data: { messageId: message._id.toString(), fromUserId: reactorId },
+          }).catch(() => {});
+        }
+      } else {
+        const otherPartyId =
+          message.from.toString() === reactorId ? message.to?.toString() : message.from.toString();
+        if (otherPartyId && otherPartyId !== reactorId) {
+          notifyUser(otherPartyId, {
+            title: 'QuantumChat',
+            body: 'New reaction',
+            kind: 'reaction',
+            conversationKey: conversationKey({ from: message.from, to: message.to }),
+            url: `/chat/${reactorId}`,
+            data: { messageId: message._id.toString(), fromUserId: reactorId },
+          }).catch(() => {});
+        }
+      }
+    }
+
     res.json({ success: true, data: payload });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });

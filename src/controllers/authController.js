@@ -37,7 +37,7 @@ async function issueSession(user, req, { deviceLabel, rememberMe = true } = {}) 
 
 export async function register(req, res) {
   try {
-    const { username, email, password, publicKeys, displayName, dateOfBirth, timezone, preferredLanguage } = req.body;
+    const { username, email, password, publicKeys, displayName, dateOfBirth, timezone, preferredLanguage, referralCode } = req.body;
     const normalizedUsername = String(username || '').trim();
     const normalizedEmail = String(email || '').trim().toLowerCase();
 
@@ -101,6 +101,17 @@ export async function register(req, res) {
       // Gracefully fall back to empty object on failure
     }
 
+    // Referral is best-effort — an invalid/expired code never blocks signup,
+    // it's simply ignored and the account is created without an inviter.
+    let referrer = null;
+    const referralCodeRaw = typeof referralCode === 'string' ? referralCode.trim().toLowerCase() : '';
+    if (referralCodeRaw) {
+      referrer = await User.findOne({
+        referralCode: referralCodeRaw,
+        isSystemUser: { $ne: true },
+      }).select('_id');
+    }
+
     const user = new User({
       username: normalizedUsername,
       email: normalizedEmail,
@@ -113,6 +124,7 @@ export async function register(req, res) {
       publicKeys: publicKeys.map((k) => k.toLowerCase()),
       lastLoginAt: new Date(),
       emailVerified: false,
+      referredBy: referrer ? referrer._id : undefined,
     });
     const verifyTokenRaw = user.createEmailVerifyToken();
     await user.save();
@@ -419,6 +431,36 @@ export async function resendVerification(req, res) {
     const data = { message: 'Verification email generated', user: user.toSelfJSON() };
     if (shouldExposeEmailLinks()) data.verifyUrl = verifyUrl;
     res.json({ success: true, data });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+/**
+ * Public (unauthenticated) preview of who an invite link belongs to, shown
+ * on the registration page before the visitor creates an account. Never
+ * exposes anything beyond username/displayName/avatar-presence — same
+ * minimal-disclosure shape as the group invite preview.
+ */
+export async function referralPreview(req, res) {
+  try {
+    const code = String(req.params.code || '').trim().toLowerCase();
+    if (!code) return res.status(400).json({ success: false, error: 'Referral code required' });
+    const referrer = await User.findOne({
+      referralCode: code,
+      isSystemUser: { $ne: true },
+    }).select('username displayName avatarPath');
+    if (!referrer) {
+      return res.status(404).json({ success: false, error: 'Invite link not found or expired' });
+    }
+    res.json({
+      success: true,
+      data: {
+        username: referrer.username,
+        displayName: referrer.displayName || '',
+        hasAvatar: Boolean(referrer.avatarPath),
+      },
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }

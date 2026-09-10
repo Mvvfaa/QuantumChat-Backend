@@ -409,9 +409,33 @@ friends: [
       type: String,
       default: null,
     },
+    // Personal invite link, auto-generated on first save. Used for
+    // "invite a friend" referral tracking — never exposed on other users'
+    // public profiles, only to the account holder (toSelfJSON) and via the
+    // dedicated public preview endpoint by code.
+    referralCode: {
+      type: String,
+      unique: true,
+      sparse: true,
+      index: true,
+    },
+    // Set once at signup if a valid referralCode was used. Null for anyone
+    // who joined without one, or whose referrer's code was invalid/expired.
+    referredBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
   },
   { timestamps: true }
 );
+
+userSchema.pre('save', function generateReferralCode(next) {
+  if (!this.referralCode) {
+    this.referralCode = crypto.randomBytes(4).toString('hex');
+  }
+  next();
+});
 userSchema.pre('save', async function hashPassword(next) {
   if (!this.isModified('password')) return next();
   if (!this.password) return next();
@@ -613,6 +637,7 @@ userSchema.methods.toSelfJSON = function toSelfJSON() {
       scope: c.scope || 'all',
     })) : [],
     totpEnabled: Boolean(this.totpEnabled),
+    referralCode: this.referralCode || null,
   };
 };
 

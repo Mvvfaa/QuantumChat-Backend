@@ -12,6 +12,7 @@ import {
   enable2fa,
   disable2fa,
   verify2fa,
+  referralPreview,
 } from '../controllers/authController.js';
 import { requireAuth } from '../middleware/auth.js';
 
@@ -19,6 +20,7 @@ const router = Router();
 
 router.post('/register', register);
 router.post('/login', login);
+router.get('/referral-preview/:code', referralPreview);
 router.post('/forgot-password', forgotPassword);
 router.post('/reset-password', resetPassword);
 router.get('/verify-email', verifyEmail);

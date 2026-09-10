@@ -1,14 +1,14 @@
 import crypto from 'crypto';
 import mongoose from 'mongoose';
+import { getStorage, newObjectName, safeImageContentType } from '../middleware/upload.js';
 import Group from '../models/Group.js';
 import GroupJoinRequest from '../models/GroupJoinRequest.js';
-import User from '../models/User.js';
 import Message from '../models/Message.js';
-import { getStorage, newObjectName, safeImageContentType } from '../middleware/upload.js';
-import { sealForPublicKey } from '../utils/sealedBox.js';
-import { notifyUser } from '../services/pushService.js';
+import User from '../models/User.js';
 import { incrementCiphertextsRelayed } from '../services/blindnessStats.js';
-import { resolveExpiresAt, notExpiredFilter } from '../utils/messageExpiry.js';
+import { notifyUser } from '../services/pushService.js';
+import { notExpiredFilter, resolveExpiresAt } from '../utils/messageExpiry.js';
+import { sealForPublicKey } from '../utils/sealedBox.js';
 import { toObjectId } from '../utils/toObjectId.js';
 
 
@@ -1224,6 +1224,7 @@ export async function sendGroupMessage(req, res) {
             : 'New group message',
         kind: 'group',
         isMention,
+        isAnnouncement: messageKind === 'announcement',   // NEW
         conversationKey: `group:${groupId}`,
         url: `/chat/g/${groupId}`,
       }).catch(() => {});

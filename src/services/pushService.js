@@ -202,12 +202,14 @@ async function shouldSendPush(userId, payload) {
   if (kind === 'dm') {
     if (ns.messageNotifications === 'off') return false;
   }
+  if (kind === 'reaction') {
+    if (ns.messageNotifications === 'all_except_reactions') return false;
+  }
   if (kind === 'group') {
     const mode = ns.groupNotifications || 'all';
     if (mode === 'off') return false;
-    if ((mode === 'mentions_only' || mode === 'important_only') && !payload?.isMention) {
-      return false;
-    }
+    if (mode === 'mentions_only' && !payload?.isMention) return false;
+    if (mode === 'important_only' && !payload?.isMention && !payload?.isAnnouncement) return false
   }
   if (kind === 'call') {
     const cn = ns.callNotifications || {};

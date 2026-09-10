@@ -6,6 +6,7 @@ import Message from '../models/Message.js';
 import User, { KEY_SET_SIZE } from '../models/User.js';
 import { generateTransliteratedNames } from '../services/transliterationService.js';
 import { conversationKey } from '../utils/conversationKey.js';
+import { appBaseUrl } from '../utils/mail.js';
 import { normalizeNotificationSettings } from '../utils/notificationSettings.js';
 import { isEmailLike, normalizePhone, phoneLookupVariants } from '../utils/phone.js';
 import { toObjectId } from '../utils/toObjectId.js';
@@ -1405,6 +1406,33 @@ export async function updateLanguage(req, res) {
     req.user.preferredLanguage = lang;
     await req.user.save();
     res.json({ success: true, data: req.user.toSelfJSON() });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+/** My invite link plus the list of people who joined using it. */
+export async function getMyReferrals(req, res) {
+  try {
+    const referredUsers = await User.find({ referredBy: req.user._id })
+      .select('username displayName avatarPath createdAt')
+      .sort({ createdAt: -1 });
+
+    res.json({
+      success: true,
+      data: {
+        referralCode: req.user.referralCode,
+        referralLink: `${appBaseUrl()}/register?ref=${req.user.referralCode}`,
+        invitedCount: referredUsers.length,
+        invitedUsers: referredUsers.map((u) => ({
+          id: u._id,
+          username: u.username,
+          displayName: u.displayName || '',
+          hasAvatar: Boolean(u.avatarPath),
+          joinedAt: u.createdAt,
+        })),
+      },
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
