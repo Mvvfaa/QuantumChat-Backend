@@ -1,7 +1,9 @@
 import mongoose from 'mongoose';
 import path from 'path';
+import crypto from 'crypto';
 import { getStorage, isSafeImageMime, newObjectName, safeImageContentType } from '../middleware/upload.js';
 import Story from '../models/Story.js';
+import User from '../models/User.js';
 import { areUsersBlocked } from './userController.js';
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
@@ -17,6 +19,28 @@ function parseSealedFlag(value) {
   if (value === true || value === 1) return true;
   const s = String(value || '').toLowerCase();
   return s === 'true' || s === '1' || s === 'yes';
+}
+
+// Dedicated secret preferred; falls back to JWT secret so this works out of the box.
+// Set STORY_VIEW_HASH_SECRET in production for a value independent of your auth secret.
+const STORY_VIEW_HASH_SECRET =
+  process.env.STORY_VIEW_HASH_SECRET || process.env.JWT_SECRET || 'quantumchat-story-view-fallback';
+
+function hashAnonymousViewer(storyId, viewerId) {
+  return crypto
+    .createHmac('sha256', STORY_VIEW_HASH_SECRET)
+    .update(`${storyId}:${viewerId}`)
+    .digest('hex');
+}
+
+/** True if this viewer has already fully consumed a viewOnce story (named or anonymous). */
+function hasViewerConsumed(story, viewerId) {
+  const namedConsumed = (story.views || []).some(
+    (v) => String(v.user?._id || v.user) === String(viewerId) && v.consumed
+  );
+  if (namedConsumed) return true;
+  const hash = hashAnonymousViewer(story._id, viewerId);
+  return (story.anonymousViewerHashes || []).includes(hash);
 }
 
 function parseStoryStatus(raw) {
@@ -149,7 +173,7 @@ export async function createStory(req, res) {
     const allowReplies = parseSealedFlag(
       req.body.allowReplies === undefined ? true : req.body.allowReplies
     );
-
+    const viewOnce = parseSealedFlag(req.body.viewOnce);
     let envelopes;
     let contentIv;
     if (sealed) {
@@ -232,6 +256,7 @@ export async function createStory(req, res) {
       expiresAt,
       sealed,
       allowReplies,
+      viewOnce,
       contentIv: sealed ? contentIv : undefined,
       envelopes: sealed ? envelopes : undefined,
     });
@@ -261,11 +286,29 @@ export async function listStories(req, res) {
       .populate('user', 'username avatarPath');
 
     const viewerId = String(req.user._id);
+    const ownerIds = [
+      ...new Set(
+        stories
+          .map((s) => String(s.user?._id || s.user || ''))
+          .filter((id) => id && !blocked.has(id) && id !== viewerId),
+      ),
+    ];
+    // One query for "who blocked me" instead of N areUsersBlocked round-trips.
+    const reverseBlocked = new Set();
+    if (ownerIds.length) {
+      const blockers = await User.find({
+        _id: { $in: ownerIds },
+        blockedUsers: req.user._id,
+      }).select('_id');
+      for (const u of blockers) reverseBlocked.add(String(u._id));
+    }
+
     const filtered = [];
     for (const story of stories) {
       const ownerId = String(story.user?._id || story.user);
       if (blocked.has(ownerId)) continue;
-      if (await areUsersBlocked(req.user._id, ownerId)) continue;
+      if (reverseBlocked.has(ownerId)) continue;
+      if (story.viewOnce && ownerId !== viewerId && hasViewerConsumed(story, viewerId)) continue;
       if (story.sealed) {
         const envelopes = story.envelopes || [];
         const allowed = envelopes.some((e) => String(e.user) === viewerId);
@@ -329,6 +372,9 @@ export async function getStoryById(req, res) {
     }
     if (await areUsersBlocked(req.user._id, ownerId)) {
       return res.status(403).json({ success: false, error: 'Not allowed' });
+    }
+    if (story.viewOnce && ownerId !== viewerId && hasViewerConsumed(story, viewerId)) {
+      return res.status(404).json({ success: false, error: 'Story not found or expired' });
     }
     if ((story.status || 'published') === 'published' && story.sealed) {
       const envelopes = story.envelopes || [];
@@ -429,6 +475,10 @@ export async function getStoryMedia(req, res) {
       return res.status(403).json({ success: false, error: 'Not allowed' });
     }
 
+    if (story.viewOnce && !viewerIsOwner && hasViewerConsumed(story, viewerId)) {
+      return res.status(404).json({ success: false, error: 'Story not found or expired' });
+    }
+
     if (story.sealed) {
       const envelopes = story.envelopes || [];
       const allowed = envelopes.some((e) => String(e.user) === viewerId);
@@ -468,7 +518,6 @@ export async function getStoryMedia(req, res) {
     }
   }
 }
-
 /** Records that the current user viewed a story. Called once per open. */
 export async function markStoryViewed(req, res) {
   try {
@@ -490,26 +539,60 @@ export async function markStoryViewed(req, res) {
       return res.status(403).json({ success: false, error: 'Not allowed' });
     }
 
-    const result = await Story.updateOne(
-      { _id: id, 'views.user': { $ne: req.user._id } },
-      { $push: { views: { user: req.user._id, viewedAt: new Date() } } }
-    );
-    const wasNewView = result.modifiedCount === 1;
+    // Server decides anonymity from the account setting — never trust a client-sent flag,
+    // since that would let someone toggle it off just to peek at their own viewer list.
+    const wantsAnonymous = Boolean(req.user.privacy?.viewStoriesAnonymously);
+    let wasNewView = false;
+
+    if (wantsAnonymous) {
+      const hash = hashAnonymousViewer(story._id, req.user._id);
+      const result = await Story.updateOne(
+        { _id: id, anonymousViewerHashes: { $ne: hash } },
+        { $push: { anonymousViewerHashes: hash }, $inc: { anonymousViewCount: 1 } }
+      );
+      wasNewView = result.modifiedCount === 1;
+    } else {
+      const result = await Story.updateOne(
+        { _id: id, 'views.user': { $ne: req.user._id } },
+        {
+          $push: {
+            views: { user: req.user._id, viewedAt: new Date(), consumed: Boolean(story.viewOnce) },
+          },
+        }
+      );
+      wasNewView = result.modifiedCount === 1;
+    }
 
     if (wasNewView) {
       const io = req.app.get('io');
       if (io) {
-        const updated = await Story.findById(id).select('views');
-        io.to(ownerId).emit('story:viewed', {
-          storyId: String(story._id),
-          viewer: {
-            id: viewerId,
-            username: req.user.username,
-            hasAvatar: Boolean(req.user.avatarPath),
-          },
-          viewedAt: new Date().toISOString(),
-          viewerCount: updated.views.length,
-        });
+        const [updated, owner] = await Promise.all([
+          Story.findById(id).select('views anonymousViewCount'),
+          User.findById(ownerId).select('privacy.viewStoriesAnonymously'),
+        ]);
+        const totalViewerCount =
+          (updated?.views?.length || 0) + (updated?.anonymousViewCount || 0);
+        const ownerHidesViewers = Boolean(owner?.privacy?.viewStoriesAnonymously);
+
+        if (wantsAnonymous || ownerHidesViewers) {
+          io.to(ownerId).emit('story:viewed', {
+            storyId: String(story._id),
+            anonymous: true,
+            viewedAt: new Date().toISOString(),
+            viewerCount: totalViewerCount,
+          });
+        } else {
+          io.to(ownerId).emit('story:viewed', {
+            storyId: String(story._id),
+            viewer: {
+              id: viewerId,
+              username: req.user.username,
+              hasAvatar: Boolean(req.user.avatarPath),
+            },
+            viewedAt: new Date().toISOString(),
+            viewerCount: totalViewerCount,
+          });
+        }
       }
     }
 
@@ -518,8 +601,8 @@ export async function markStoryViewed(req, res) {
     res.status(500).json({ success: false, error: err.message });
   }
 }
-
 /** Returns the viewer list for a story. Owner-only. */
+
 export async function getStoryViewers(req, res) {
   try {
     const { id } = req.params;
@@ -534,6 +617,25 @@ export async function getStoryViewers(req, res) {
       return res.status(403).json({ success: false, error: 'Not authorized' });
     }
 
+    const anonymousViewCount = story.anonymousViewCount || 0;
+    const totalViewerCount = (story.views || []).length + anonymousViewCount;
+
+    // Reciprocity rule: an account that views others' stories anonymously forfeits
+    // the ability to see who viewed its own stories. Count only, identities withheld.
+    if (req.user.privacy?.viewStoriesAnonymously) {
+      return res.json({
+        success: true,
+        data: {
+          viewerCount: totalViewerCount,
+          viewers: [],
+          anonymousViewCount,
+          viewersHidden: true,
+          viewersHiddenReason:
+            'Turn off "View stories anonymously" in Settings to see who viewed your stories',
+        },
+      });
+    }
+
     const viewers = (story.views || [])
       .slice()
       .sort((a, b) => new Date(b.viewedAt) - new Date(a.viewedAt))
@@ -544,12 +646,19 @@ export async function getStoryViewers(req, res) {
         viewedAt: v.viewedAt,
       }));
 
-    res.json({ success: true, data: { viewerCount: viewers.length, viewers } });
+    res.json({
+      success: true,
+      data: {
+        viewerCount: totalViewerCount,
+        viewers,
+        anonymousViewCount,
+        viewersHidden: false,
+      },
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 }
-
 /** Update draft/scheduled settings (ttl, schedule, allowReplies, caption). */
 export async function updateStory(req, res) {
   try {

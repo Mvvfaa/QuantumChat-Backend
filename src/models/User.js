@@ -81,6 +81,13 @@ const privacySchema = new mongoose.Schema(
      * chats and profile on their device (strongest on mobile).
      */
     screenshotProtection: { type: Boolean, default: false },
+    /**
+     * When true: (a) this user's story views are recorded anonymously to
+     * everyone else, and (b) as the reciprocal trade-off, this user can no
+     * longer see who viewed their OWN stories — enforced server-side in
+     * storyController.getStoryViewers, never just hidden client-side.
+     */
+    viewStoriesAnonymously: { type: Boolean, default: false },
   },
   { _id: false }
 );
@@ -593,6 +600,7 @@ userSchema.methods.toPublicJSON = function toPublicJSON(viewerId) {
       whoCanCreateGroupsWithMe: privacy.whoCanCreateGroupsWithMe || 'everyone',
       groupMentions: privacy.groupMentions || 'everyone',
       screenshotProtection: privacy.screenshotProtection === true,
+      viewStoriesAnonymously: privacy.viewStoriesAnonymously === true,
     },
     isSystemUser: Boolean(this.isSystemUser),
     systemRole: this.systemRole || null,

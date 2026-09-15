@@ -115,7 +115,7 @@ export async function getUser(req, res) {
 
 export async function updatePrivacy(req, res) {
   try {
-    const {
+     const {
       lastSeen,
       readReceipts,
       onlineStatus,
@@ -133,6 +133,7 @@ export async function updatePrivacy(req, res) {
       whoCanCreateGroupsWithMe,
       groupMentions,
       screenshotProtection,
+      viewStoriesAnonymously,
     } = req.body || {};
 
     if (lastSeen !== undefined && !['everyone', 'friends', 'nobody'].includes(lastSeen)) {
@@ -150,6 +151,9 @@ export async function updatePrivacy(req, res) {
     }
     if (screenshotProtection !== undefined && typeof screenshotProtection !== 'boolean') {
       return res.status(400).json({ success: false, error: 'Invalid screenshotProtection privacy setting' });
+    }
+    if (viewStoriesAnonymously !== undefined && typeof viewStoriesAnonymously !== 'boolean') {
+      return res.status(400).json({ success: false, error: 'Invalid viewStoriesAnonymously privacy setting' });
     }
     if (onlineStatus !== undefined && !['everyone', 'friends', 'selected'].includes(onlineStatus)) {
       return res.status(400).json({ success: false, error: 'Invalid onlineStatus privacy setting' });
@@ -381,6 +385,10 @@ function applyPrivacyPatch(user, privacy) {
 
   if (typeof privacy.screenshotProtection === 'boolean') {
     user.privacy.screenshotProtection = privacy.screenshotProtection;
+  }
+
+  if (typeof privacy.viewStoriesAnonymously === 'boolean') {
+    user.privacy.viewStoriesAnonymously = privacy.viewStoriesAnonymously;
   }
 
   if (onlineStatusOk.includes(privacy.onlineStatus)) {

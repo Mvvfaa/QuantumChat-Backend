@@ -65,15 +65,27 @@ const storySchema = new mongoose.Schema(
     envelopeNonce: { type: String, default: undefined },
     envelopeEphemeralPublicKey: { type: String, default: undefined },
     envelopeTargetHint: { type: String, default: undefined },
+    /** View-once: story becomes permanently unavailable to a viewer after they open it once. */
+    viewOnce: { type: Boolean, default: false },
     views: {
       type: [
         {
           user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
           viewedAt: { type: Date, default: Date.now },
+          /** True when this story is viewOnce — blocks this viewer from re-fetching it. */
+          consumed: { type: Boolean, default: false },
         },
       ],
       default: [],
     },
+    /** Count of views made anonymously (identity intentionally not stored). */
+    anonymousViewCount: { type: Number, default: 0 },
+    /**
+     * One-way HMAC(storyId, viewerId) per anonymous viewer — used only to dedupe repeat
+     * views and to gate viewOnce consumption. Never derivable back to a user identity,
+     * and deliberately never included in toPublicJSON.
+     */
+    anonymousViewerHashes: { type: [String], default: [] },
   },
   { timestamps: true }
 );
@@ -113,7 +125,8 @@ storySchema.methods.toPublicJSON = function toPublicJSON() {
     updatedAt: this.updatedAt,
     expiresAt: this.expiresAt,
     sealed: Boolean(this.sealed),
-    allowReplies: this.allowReplies !== false,
+        allowReplies: this.allowReplies !== false,
+    viewOnce: Boolean(this.viewOnce),
     contentIv: this.contentIv || undefined,
     envelopes: Array.isArray(this.envelopes)
       ? this.envelopes.map((e) => ({
@@ -129,9 +142,9 @@ storySchema.methods.toPublicJSON = function toPublicJSON() {
     envelopeTargetHint: this.envelopeTargetHint || undefined,
   };
 };
-
 storySchema.methods.viewerCount = function viewerCount() {
-  return Array.isArray(this.views) ? this.views.length : 0;
+  const named = Array.isArray(this.views) ? this.views.length : 0;
+  return named + (this.anonymousViewCount || 0);
 };
 
 export default mongoose.model('Story', storySchema, 'stories');
