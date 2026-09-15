@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import express from 'express';
 import multer from 'multer';
 import path from 'path';
-import { getStorage, getStorageProviderName } from '../storage/index.js';
+import { getStorage, getStorageProviderName, readStoredObject, deleteStoredObject } from '../storage/index.js';
 /** Raster images only — SVG is rejected (scriptable when opened as a document). */
 export const SAFE_IMAGE_MIMES = new Set([
   'image/jpeg',
@@ -142,5 +142,5 @@ export function newObjectName(prefix = '', ext = '') {
   return safePrefix ? `${safePrefix}/${base}` : base;
 }
 
-export { getStorage, getStorageProviderName };
+export { getStorage, getStorageProviderName, readStoredObject, deleteStoredObject };
 

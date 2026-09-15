@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 import path from 'path';
 import crypto from 'crypto';
-import { getStorage, isSafeImageMime, newObjectName, safeImageContentType } from '../middleware/upload.js';
+import { getStorage, isSafeImageMime, newObjectName, readStoredObject, deleteStoredObject, safeImageContentType } from '../middleware/upload.js';
 import Story from '../models/Story.js';
 import User from '../models/User.js';
 import { areUsersBlocked } from './userController.js';
@@ -491,7 +491,7 @@ export async function getStoryMedia(req, res) {
       }
     }
 
-    const bytes = await getStorage().read(story.storagePath);
+    const bytes = await readStoredObject(story.storagePath, story.storageProvider);
     if (story.sealed) {
       res.setHeader('Content-Type', 'application/octet-stream');
       res.setHeader('Content-Disposition', 'attachment');
@@ -776,7 +776,7 @@ export async function deleteStory(req, res) {
       return res.status(403).json({ success: false, error: 'Not authorized' });
     }
     try {
-      if (story.storagePath) await getStorage().delete(story.storagePath);
+      if (story.storagePath) await deleteStoredObject(story.storagePath, story.storageProvider);
     } catch {
       // ignore
     }
