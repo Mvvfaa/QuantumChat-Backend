@@ -131,6 +131,14 @@ export function attachSocket(io) {
     setOnline(userId, socket.id);
 
     (async () => {
+      try {
+        await User.findByIdAndUpdate(userId, {
+          lastLoginAt: new Date(),
+          presenceAt: new Date(),
+        });
+      } catch {
+        // ignore
+      }
       await broadcastPresence(io, userId, true);
 
       const ids = getOnlineUserIds();
@@ -378,7 +386,10 @@ export function attachSocket(io) {
       if (wentOffline) {
         const lastLoginAt = new Date();
         try {
-          await User.findByIdAndUpdate(userId, { lastLoginAt });
+          await User.findByIdAndUpdate(userId, {
+            lastLoginAt,
+            presenceAt: lastLoginAt,
+          });
         } catch {
           // ignore
         }

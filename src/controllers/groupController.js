@@ -645,6 +645,180 @@ export async function renameGroup(req, res) {
   return updateGroup(req, res);
 }
 
+const MAX_HUB_TASKS = 50;
+const MAX_HUB_LINKS = 40;
+const MAX_HUB_NOTES = 20;
+
+function ensureCommandCenter(group) {
+  if (!group.commandCenter) group.commandCenter = { tasks: [], links: [], notes: [] };
+  if (!Array.isArray(group.commandCenter.tasks)) group.commandCenter.tasks = [];
+  if (!Array.isArray(group.commandCenter.links)) group.commandCenter.links = [];
+  if (!Array.isArray(group.commandCenter.notes)) group.commandCenter.notes = [];
+}
+
+function isSafeHttpUrl(url) {
+  try {
+    const u = new URL(String(url));
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Member-writable Command Center hub (tasks / links / notes).
+ * Body shape: { action, section, ...fields } where section is tasks|links|notes
+ * and action is add|update|remove|toggle.
+ */
+export async function updateCommandCenter(req, res) {
+  try {
+    const { id } = req.params;
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ success: false, error: 'Invalid group id' });
+    }
+    const group = await Group.findById(id);
+    if (!group) return res.status(404).json({ success: false, error: 'Group not found' });
+    if (!group.isMember(req.user._id)) {
+      return res.status(403).json({ success: false, error: 'Not a group member' });
+    }
+
+    const { action, section, itemId, title, body, url, done, assigneeId } = req.body || {};
+    if (!['tasks', 'links', 'notes'].includes(section)) {
+      return res.status(400).json({ success: false, error: 'Invalid section' });
+    }
+    if (!['add', 'update', 'remove', 'toggle'].includes(action)) {
+      return res.status(400).json({ success: false, error: 'Invalid action' });
+    }
+
+    ensureCommandCenter(group);
+    const uid = req.user._id;
+    const list = group.commandCenter[section];
+
+    if (action === 'add') {
+      if (section === 'tasks') {
+        if (list.length >= MAX_HUB_TASKS) {
+          return res.status(400).json({ success: false, error: 'Task limit reached' });
+        }
+        const t = String(title || '').trim();
+        if (t.length < 1 || t.length > 200) {
+          return res.status(400).json({ success: false, error: 'Task title required (max 200)' });
+        }
+        let assignee = null;
+        if (assigneeId && mongoose.isValidObjectId(assigneeId) && group.isMember(assigneeId)) {
+          assignee = assigneeId;
+        }
+        list.push({
+          title: t,
+          done: false,
+          assigneeId: assignee,
+          createdBy: uid,
+          createdAt: new Date(),
+        });
+      } else if (section === 'links') {
+        if (list.length >= MAX_HUB_LINKS) {
+          return res.status(400).json({ success: false, error: 'Link limit reached' });
+        }
+        const linkTitle = String(title || '').trim() || 'Link';
+        const linkUrl = String(url || '').trim();
+        if (!isSafeHttpUrl(linkUrl)) {
+          return res.status(400).json({ success: false, error: 'Valid http(s) URL required' });
+        }
+        if (linkTitle.length > 120 || linkUrl.length > 2000) {
+          return res.status(400).json({ success: false, error: 'Link too long' });
+        }
+        list.push({
+          title: linkTitle.slice(0, 120),
+          url: linkUrl,
+          createdBy: uid,
+          createdAt: new Date(),
+        });
+      } else {
+        if (list.length >= MAX_HUB_NOTES) {
+          return res.status(400).json({ success: false, error: 'Notes limit reached' });
+        }
+        const noteTitle = String(title || '').trim().slice(0, 120);
+        const noteBody = String(body || '').trim();
+        if (!noteBody) {
+          return res.status(400).json({ success: false, error: 'Note body required' });
+        }
+        if (noteBody.length > 5000) {
+          return res.status(400).json({ success: false, error: 'Note too long' });
+        }
+        const now = new Date();
+        list.push({
+          title: noteTitle,
+          body: noteBody,
+          updatedBy: uid,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+    } else {
+      if (!itemId || !mongoose.isValidObjectId(itemId)) {
+        return res.status(400).json({ success: false, error: 'Valid itemId required' });
+      }
+      const idx = list.findIndex((item) => String(item._id) === String(itemId));
+      if (idx < 0) {
+        return res.status(404).json({ success: false, error: 'Item not found' });
+      }
+
+      if (action === 'remove') {
+        list.splice(idx, 1);
+      } else if (action === 'toggle') {
+        if (section !== 'tasks') {
+          return res.status(400).json({ success: false, error: 'Toggle only applies to tasks' });
+        }
+        list[idx].done = typeof done === 'boolean' ? done : !list[idx].done;
+      } else if (action === 'update') {
+        if (section === 'tasks') {
+          if (title != null) {
+            const t = String(title).trim();
+            if (t.length < 1 || t.length > 200) {
+              return res.status(400).json({ success: false, error: 'Invalid task title' });
+            }
+            list[idx].title = t;
+          }
+          if (typeof done === 'boolean') list[idx].done = done;
+          if (assigneeId === null) list[idx].assigneeId = null;
+          else if (assigneeId && mongoose.isValidObjectId(assigneeId) && group.isMember(assigneeId)) {
+            list[idx].assigneeId = assigneeId;
+          }
+        } else if (section === 'links') {
+          if (title != null) list[idx].title = String(title).trim().slice(0, 120) || list[idx].title;
+          if (url != null) {
+            const linkUrl = String(url).trim();
+            if (!isSafeHttpUrl(linkUrl)) {
+              return res.status(400).json({ success: false, error: 'Valid http(s) URL required' });
+            }
+            list[idx].url = linkUrl.slice(0, 2000);
+          }
+        } else {
+          if (title != null) list[idx].title = String(title).trim().slice(0, 120);
+          if (body != null) {
+            const noteBody = String(body).trim();
+            if (!noteBody || noteBody.length > 5000) {
+              return res.status(400).json({ success: false, error: 'Invalid note body' });
+            }
+            list[idx].body = noteBody;
+          }
+          list[idx].updatedBy = uid;
+          list[idx].updatedAt = new Date();
+        }
+      }
+    }
+
+    group.markModified('commandCenter');
+    await group.save();
+    const populated = await loadGroup(group._id);
+    const payload = populated.toPublicJSON();
+    emitToMembers(req.app.get('io'), group.members, 'group:updated', payload);
+    return res.json({ success: true, data: payload });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+
 export async function uploadGroupPhoto(req, res) {
   try {
     const { id } = req.params;

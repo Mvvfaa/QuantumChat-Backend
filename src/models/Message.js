@@ -110,7 +110,14 @@ const messageSchema = new mongoose.Schema(
       allowForward: { type: Boolean, default: true },
       forwardUntil: { type: Date, default: null },
     },
-   expiresAt: { type: Date, default: null, index: true },
+      expiresAt: { type: Date, default: null, index: true },
+    // Time Capsule: sealed exactly like any other DM at send time — the
+    // encryption doesn't change. The server just withholds forRecipient/
+    // forSender from API responses (see toClientMessage) until unlocksAt
+    // has passed. DMs only for now.
+    timeCapsule: { type: Boolean, default: false },
+    unlocksAt: { type: Date, default: null },
+    capsuleDeliveredAt: { type: Date, default: null },
     // WhatsApp-style view-once media: photo / video / voice can be opened once,
     // then the ciphertext is purged and a tombstone remains.
     viewOnce: { type: Boolean, default: false },
@@ -134,6 +141,22 @@ messageSchema.index({ group: 1, createdAt: 1 });
 messageSchema.index({ decoyFor: 1, from: 1, to: 1, createdAt: 1 });
 messageSchema.index({ 'aiMetadata.requestId': 1 }, { unique: true, sparse: true });
 messageSchema.index({ expiresAt: 1 }, { sparse: true });
+messageSchema.index({ timeCapsule: 1, unlocksAt: 1, capsuleDeliveredAt: 1 }, { sparse: true });
+
+messageSchema.pre('validate', function ensureCapsuleShape(next) {
+  if (!this.timeCapsule) return next();
+  if (this.group) {
+    return next(new Error('Time capsule messages are only supported for direct messages right now'));
+  }
+  const unlocksAt = this.unlocksAt ? new Date(this.unlocksAt) : null;
+  if (!unlocksAt || Number.isNaN(unlocksAt.getTime())) {
+    return next(new Error('Time capsule messages require a valid unlocksAt date'));
+  }
+  if (unlocksAt.getTime() <= Date.now()) {
+    return next(new Error('unlocksAt must be in the future'));
+  }
+  next();
+});
 
 messageSchema.pre('validate', function ensureShape(next) {
   const isGroup = Boolean(this.group);

@@ -1,5 +1,8 @@
 import User from '../models/User.js';
-import { canViewerSeeUserOnline } from '../utils/presencePrivacy.js';
+import {
+  canViewerSeeUserLastSeen,
+  canViewerSeeUserOnline,
+} from '../utils/presencePrivacy.js';
 import { toObjectId } from '../utils/toObjectId.js';
 
 /** Consider a user online if they heartbeat within this window. */
@@ -10,6 +13,8 @@ export const PRESENCE_TYPING_MS = 5_000;
 /**
  * REST presence/typing for serverless hosts where Socket.IO cannot stay open.
  * One POST both refreshes the caller's heartbeat and returns a filtered snapshot.
+ *
+ * Also bumps lastLoginAt so "last seen" tracks real activity (not only login time).
  */
 export async function heartbeatPresence(req, res) {
   try {
@@ -39,6 +44,8 @@ export async function heartbeatPresence(req, res) {
       {
         $set: {
           presenceAt: now,
+          // Keep last seen = last real activity for REST clients (no socket disconnect).
+          lastLoginAt: now,
           typingTo,
           typingGroupId,
           typingAt,
@@ -84,9 +91,31 @@ export async function heartbeatPresence(req, res) {
       }
     }
 
+    let peerPresence = null;
+    if (watchPeerId && toObjectId(watchPeerId)) {
+      const peer = await User.findById(watchPeerId)
+        .select('privacy friends lastLoginAt presenceAt')
+        .lean();
+      if (peer) {
+        const online = onlineUserIds.includes(String(peer._id));
+        const showLastSeen = canViewerSeeUserLastSeen(peer, viewerId);
+        // Use the newest of presence heartbeat and lastLoginAt.
+        const presenceMs = peer.presenceAt ? new Date(peer.presenceAt).getTime() : 0;
+        const loginMs = peer.lastLoginAt ? new Date(peer.lastLoginAt).getTime() : 0;
+        const activityMs = Math.max(presenceMs, loginMs);
+        const activityAt = activityMs > 0 ? new Date(activityMs) : null;
+        peerPresence = {
+          userId: String(peer._id),
+          online,
+          lastLoginAt:
+            showLastSeen && activityAt ? activityAt.toISOString() : null,
+        };
+      }
+    }
+
     return res.json({
       success: true,
-      data: { onlineUserIds, typing },
+      data: { onlineUserIds, typing, peerPresence },
     });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });

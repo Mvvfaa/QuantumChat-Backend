@@ -88,6 +88,35 @@ const groupSchema = new mongoose.Schema(
       usageDay: { type: String, default: '' },
       usageCount: { type: Number, default: 0 },
     },
+    /** Group Command Center hub — shared tasks, links, and notes (not chat messages). */
+    commandCenter: {
+      tasks: [
+        {
+          title: { type: String, trim: true, maxlength: 200, required: true },
+          done: { type: Boolean, default: false },
+          assigneeId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+          createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+          createdAt: { type: Date, default: Date.now },
+        },
+      ],
+      links: [
+        {
+          title: { type: String, trim: true, maxlength: 120, required: true },
+          url: { type: String, trim: true, maxlength: 2000, required: true },
+          createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+          createdAt: { type: Date, default: Date.now },
+        },
+      ],
+      notes: [
+        {
+          title: { type: String, trim: true, maxlength: 120, default: '' },
+          body: { type: String, trim: true, maxlength: 5000, default: '' },
+          updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+          createdAt: { type: Date, default: Date.now },
+          updatedAt: { type: Date, default: Date.now },
+        },
+      ],
+    },
   },
   { timestamps: true }
 );
@@ -153,6 +182,31 @@ groupSchema.methods.toPublicJSON = function toPublicJSON() {
       invocationPolicy: this.quantumAI?.invocationPolicy || 'members',
       maxContextMessages: this.quantumAI?.maxContextMessages ?? 5,
       dailyLimit: this.quantumAI?.dailyLimit ?? 50,
+    },
+    commandCenter: {
+      tasks: (this.commandCenter?.tasks || []).map((t) => ({
+        id: String(t._id),
+        title: t.title || '',
+        done: Boolean(t.done),
+        assigneeId: t.assigneeId ? String(t.assigneeId) : null,
+        createdBy: t.createdBy ? String(t.createdBy) : null,
+        createdAt: t.createdAt || null,
+      })),
+      links: (this.commandCenter?.links || []).map((l) => ({
+        id: String(l._id),
+        title: l.title || '',
+        url: l.url || '',
+        createdBy: l.createdBy ? String(l.createdBy) : null,
+        createdAt: l.createdAt || null,
+      })),
+      notes: (this.commandCenter?.notes || []).map((n) => ({
+        id: String(n._id),
+        title: n.title || '',
+        body: n.body || '',
+        updatedBy: n.updatedBy ? String(n.updatedBy) : null,
+        createdAt: n.createdAt || null,
+        updatedAt: n.updatedAt || null,
+      })),
     },
     createdAt: this.createdAt,
     updatedAt: this.updatedAt,

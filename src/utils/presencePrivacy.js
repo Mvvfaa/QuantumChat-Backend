@@ -30,3 +30,23 @@ export function canViewerSeeUserOnline(targetUser, viewerId) {
 
   return true;
 }
+
+/**
+ * Whether `viewerId` may see `targetUser`'s last-seen timestamp.
+ */
+export function canViewerSeeUserLastSeen(targetUser, viewerId) {
+  if (!targetUser || !viewerId) return false;
+  const targetId = String(targetUser._id || targetUser.id || '');
+  if (targetId === String(viewerId)) return true;
+
+  const setting = targetUser.privacy?.lastSeen || 'everyone';
+  if (setting === 'everyone') return true;
+  if (setting === 'nobody') return false;
+
+  if (setting === 'friends') {
+    const friendIds = (targetUser.friends || []).map((f) => String(f._id || f));
+    return friendIds.includes(String(viewerId));
+  }
+
+  return false;
+}

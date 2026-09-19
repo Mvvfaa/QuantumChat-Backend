@@ -10,6 +10,7 @@ import {
   getGroupMessages,
   renameGroup,
   updateGroup,
+  updateCommandCenter,
   addMembers,
   removeMember,
   deleteGroup,
@@ -57,6 +58,7 @@ router.post('/:id/join-requests/:userId/reject', rejectJoinRequest);
 
 router.get('/:id', getGroup);
 router.patch('/:id', updateGroup);
+router.patch('/:id/command-center', updateCommandCenter);
 router.patch('/:id/name', renameGroup);
 router.delete('/:id', deleteGroup);
 

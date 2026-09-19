@@ -5,6 +5,7 @@ import mongoose from 'mongoose';
 import { allowedOrigins } from './config/corsOrigins.js';
 import { runBirthdayNotifications } from './jobs/birthdayNotifications.js';
 import { runStoryPublishJobs } from './jobs/publishScheduledStories.js';
+import { runTimeCapsuleDelivery } from './jobs/timeCapsuleDelivery.js';
 import { publicApiIpLimiter } from './middleware/apiKeyAuth.js';
 import { authLimiter } from './middleware/rateLimiter.js';
 import activityRoutes from './routes/activityRoutes.js';
@@ -122,6 +123,21 @@ app.use('/api/activity', activityRoutes);
         res.json({ success: true, data: { publishedCount } });
       } catch (err) {
         console.error('Story publish cron failed:', err.message);
+        res.status(500).json({ success: false, error: 'Sweep failed' });
+      }
+    });
+
+        app.get('/api/cron/time-capsules', async (req, res) => {
+  const provided = req.headers['x-cron-secret'];
+  if (!process.env.CRON_SECRET || provided !== process.env.CRON_SECRET) {
+    return res.status(401).json({ success: false, error: 'Unauthorized' });
+  }
+      try {
+        const io = req.app.get('io');
+        const deliveredCount = await runTimeCapsuleDelivery(io);
+        res.json({ success: true, data: { deliveredCount } });
+      } catch (err) {
+        console.error('Time capsule cron sweep failed:', err.message);
         res.status(500).json({ success: false, error: 'Sweep failed' });
       }
     });

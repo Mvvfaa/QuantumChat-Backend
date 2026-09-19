@@ -128,7 +128,7 @@ function scopeCreatedAtCondition(scope, clearedAt) {
   }
   return { ...base, mediaCategory: scope };
 }
-function toClientMessage(doc) {
+export function toClientMessage(doc, viewerId) {
   const message = typeof doc.toObject === 'function' ? doc.toObject() : { ...doc };
   message.id = message._id;
   if (message.attachment && typeof message.attachment === 'object') {
@@ -192,6 +192,15 @@ function toClientMessage(doc) {
   // Never leak ciphertext metadata after a view-once open.
   if (message.viewOnce && message.viewOnceOpenedAt) {
     message.attachment = null;
+  }
+  if (message.timeCapsule && message.unlocksAt && new Date(message.unlocksAt) > new Date()) {
+    const isSender = viewerId && String(message.from) === String(viewerId);
+    if (!isSender) {
+      message.forRecipient = undefined;
+      message.forSender = undefined;
+      message.attachment = null;
+      message.locked = true;
+    }
   }
   return message;
 }
@@ -388,6 +397,8 @@ export async function sendMessage(req, res) {
       expiresInSeconds,
       forwardPolicy: forwardPolicyRaw,
       viewOnce: viewOnceRaw,
+      timeCapsule: timeCapsuleRaw,
+      unlocksAt: unlocksAtRaw,
     } = req.body;
    if (!to || !validateEnvelope(forRecipient) || !validateEnvelope(forSender)) {
       return res.status(400).json({
@@ -430,6 +441,19 @@ export async function sendMessage(req, res) {
       });
     }
 
+        let isCapsule = false;
+    let unlocksAt;
+    if (timeCapsuleRaw === true || timeCapsuleRaw === 'true') {
+      isCapsule = true;
+      unlocksAt = new Date(unlocksAtRaw);
+      if (!unlocksAtRaw || Number.isNaN(unlocksAt.getTime()) || unlocksAt.getTime() <= Date.now()) {
+        return res.status(400).json({
+          success: false,
+          error: 'unlocksAt must be a valid future date for a time capsule message',
+        });
+      }
+    }
+
     const replyToId = await assertReplyAllowed(req, replyTo, { to: toOid });
     const forwardMeta = await assertForwardAllowed(req, forwardedFrom);
     const forwardPolicy = parseForwardPolicy(forwardPolicyRaw);
@@ -468,6 +492,8 @@ export async function sendMessage(req, res) {
       replyTo: replyToId,
       kind: kind === 'ai_note' ? 'ai_note' : 'text',
       expiresAt: expiresAt || undefined,
+      timeCapsule: isCapsule || undefined,
+      unlocksAt: isCapsule ? unlocksAt : undefined,
       forwardedFrom: forwardMeta,
       decoyFor: isDecoySend ? req.user._id : undefined,
       ...(forwardPolicy ? { forwardPolicy } : {}),
@@ -492,14 +518,19 @@ export async function sendMessage(req, res) {
 
     const io = req.app.get('io');
     if (io) {
-      io.to(toOid.toString()).emit('message:new', payload);
-      // Self-notes: room is the same — don't emit twice.
+      // Time capsules: only echo to the sender's own devices right now.
+      // The recipient gets nothing over the socket — not even a redacted
+      // placeholder — until jobs/timeCapsuleDelivery.js unlocks it. They'll
+      // see the locked placeholder next time they fetch the conversation.
+      if (!isCapsule) {
+        io.to(toOid.toString()).emit('message:new', payload);
+      }
       if (!isSelfChat) {
         io.to(req.user._id.toString()).emit('message:new', payload);
       }
     }
 
-    if (!isSelfChat) {
+    if (!isSelfChat && !isCapsule) {
       notifyUser(toOid, {
         title: 'QuantumChat',
         body: 'New message',
@@ -697,7 +728,7 @@ export async function getConversation(req, res) {
 
     res.json({
       success: true,
-      data: page.map(toClientMessage),
+      data: page.map((m) => toClientMessage(m, req.user._id)),
       meta: {
         hasMore,
         nextBefore: page.length ? page[0].createdAt : null,
