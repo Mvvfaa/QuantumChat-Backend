@@ -11,6 +11,9 @@ import {
   checkForwardAllowed,
   openViewOnce,
   getMessageInfo,
+  getImportantMessages,
+  markMessageImportant,
+  unmarkMessageImportant,
 } from '../controllers/messageController.js';
 import { requireAuthLean } from '../middleware/auth.js';
 import { readVaultUnlock } from '../middleware/vaultAuth.js';
@@ -41,9 +44,12 @@ router.use(requireAuthLean);
 router.use(readVaultUnlock);
 router.post('/', sendMessage);
 router.post('/quantum-ai-response', publishQuantumAIDirectResponse);
+router.get('/important', getImportantMessages);
 router.get('/:messageId/forward-check', checkForwardAllowed);
 router.post('/:messageId/view-once', openViewOnce);
 router.get('/:messageId/info', getMessageInfo);
+router.post('/:messageId/important', markMessageImportant);
+router.delete('/:messageId/important', unmarkMessageImportant);
 router.get('/:userId', getConversation);
 router.post('/:userId/read', markConversationRead);
 router.patch('/:messageId', editMessage);

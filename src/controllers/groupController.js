@@ -1006,7 +1006,12 @@ export async function removeMember(req, res) {
           /* ignore */
         }
       }
+      const deletedMessageIds = await Message.find({ group: id }).distinct('_id');
       await group.deleteOne();
+      await User.updateMany(
+        { 'importantMessages.messageId': { $in: deletedMessageIds } },
+        { $pull: { importantMessages: { messageId: { $in: deletedMessageIds } } } },
+      );
       await Message.deleteMany({ group: id });
       emitToMembers(req.app.get('io'), before, 'group:deleted', { id });
       return res.json({ success: true, data: { id, deleted: true } });
@@ -1163,6 +1168,11 @@ export async function deleteGroup(req, res) {
       }
     }
     await group.deleteOne();
+    const deletedMessageIds = await Message.find({ group: id }).distinct('_id');
+    await User.updateMany(
+      { 'importantMessages.messageId': { $in: deletedMessageIds } },
+      { $pull: { importantMessages: { messageId: { $in: deletedMessageIds } } } },
+    );
     await Message.deleteMany({ group: id });
     emitToMembers(req.app.get('io'), members, 'group:deleted', { id });
     res.json({ success: true, data: { id, deleted: true } });
