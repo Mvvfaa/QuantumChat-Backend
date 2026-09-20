@@ -43,6 +43,30 @@ function hasViewerConsumed(story, viewerId) {
   return (story.anonymousViewerHashes || []).includes(hash);
 }
 
+function parseCaptionMode(raw) {
+  return String(raw || 'fixed').toLowerCase() === 'free' ? 'free' : 'fixed';
+}
+
+function parseCaptionStyle(raw) {
+  let obj = raw;
+  if (typeof raw === 'string') {
+    try { obj = JSON.parse(raw); } catch { return null; }
+  }
+  if (!obj || typeof obj !== 'object') return null;
+  const clamp = (n, min, max, fallback) => {
+    const v = Number(n);
+    return Number.isFinite(v) ? Math.min(Math.max(v, min), max) : fallback;
+  };
+  return {
+    x: clamp(obj.x, 0, 100, 50),
+    y: clamp(obj.y, 0, 100, 85),
+    fontSize: clamp(obj.fontSize, 12, 48, 22),
+    color: typeof obj.color === 'string' ? obj.color.slice(0, 20) : '#ffffff',
+    background: typeof obj.background === 'string' ? obj.background.slice(0, 30) : 'rgba(0,0,0,0.35)',
+    align: ['left', 'center', 'right'].includes(obj.align) ? obj.align : 'center',
+  };
+}
+
 function parseStoryStatus(raw) {
   const s = String(raw || 'published').toLowerCase();
   if (s === 'draft' || s === 'scheduled' || s === 'published') return s;
@@ -182,6 +206,10 @@ export async function createStory(req, res) {
           ? req.body.caption.trim().slice(0, 200)
           : '';
 
+    const captionMode = sealed ? 'fixed' : parseCaptionMode(req.body.captionMode);
+    const captionStyle =
+      !sealed && captionMode === 'free' ? parseCaptionStyle(req.body.captionStyle) || undefined : undefined;
+
     const allowReplies = parseSealedFlag(
       req.body.allowReplies === undefined ? true : req.body.allowReplies
     );
@@ -263,6 +291,8 @@ export async function createStory(req, res) {
       storageProvider: stored.provider,
       durationMs,
       caption,
+      captionMode,
+      captionStyle,
       ttlMs,
       status,
       publishAt: status === 'scheduled' ? publishAt : null,
@@ -696,6 +726,13 @@ export async function updateStory(req, res) {
     }
     if (!story.sealed && typeof req.body?.caption === 'string') {
       story.caption = req.body.caption.trim().slice(0, 200);
+    }
+    if (!story.sealed && typeof req.body?.captionMode === 'string') {
+      story.captionMode = parseCaptionMode(req.body.captionMode);
+    }
+    if (!story.sealed && story.captionMode === 'free' && req.body?.captionStyle !== undefined) {
+      const style = parseCaptionStyle(req.body.captionStyle);
+      if (style) story.captionStyle = style;
     }
 
     const nextStatus = req.body?.status !== undefined ? parseStoryStatus(req.body.status) : story.status;

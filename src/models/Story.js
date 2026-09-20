@@ -34,6 +34,15 @@ const storySchema = new mongoose.Schema(
     },
     durationMs: { type: Number, default: 0, max: MAX_DURATION_MS },
     caption: { type: String, maxlength: 200, default: '' },
+    captionMode: { type: String, enum: ['fixed', 'free'], default: 'fixed' },
+    captionStyle: {
+      x: { type: Number, min: 0, max: 100, default: 50 },
+      y: { type: Number, min: 0, max: 100, default: 85 },
+      fontSize: { type: Number, min: 12, max: 48, default: 22 },
+      color: { type: String, maxlength: 20, default: '#ffffff' },
+      background: { type: String, maxlength: 30, default: 'rgba(0,0,0,0.35)' },
+      align: { type: String, enum: ['left', 'center', 'right'], default: 'center' },
+    },
     /** Plaintext status body (unsealed text stories only). */
     textContent: { type: String, maxlength: 700, default: '' },
     /** Visual style for text stories. */
@@ -115,6 +124,18 @@ storySchema.methods.toPublicJSON = function toPublicJSON() {
     size: this.size,
     durationMs: this.durationMs || 0,
     caption: this.caption || '',
+    captionMode: this.captionMode || 'fixed',
+    captionStyle:
+      this.captionMode === 'free'
+        ? {
+            x: this.captionStyle?.x ?? 50,
+            y: this.captionStyle?.y ?? 85,
+            fontSize: this.captionStyle?.fontSize ?? 22,
+            color: this.captionStyle?.color || '#ffffff',
+            background: this.captionStyle?.background || 'rgba(0,0,0,0.35)',
+            align: this.captionStyle?.align || 'center',
+          }
+        : undefined,
     textContent: this.mediaType === 'text' && !this.sealed ? this.textContent || '' : '',
     textStyle:
       this.mediaType === 'text'
