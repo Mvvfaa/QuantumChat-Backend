@@ -21,6 +21,7 @@ const storyEnvelopeSchema = new mongoose.Schema(
 const storySchema = new mongoose.Schema(
   {
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+    clientStoryId: { type: String, trim: true, maxlength: 100 },
     mediaType: { type: String, enum: ['image', 'video', 'audio', 'text'], required: true },
     filename: { type: String, required: true },
     mimetype: { type: String, required: true },
@@ -92,6 +93,10 @@ const storySchema = new mongoose.Schema(
 
 storySchema.index({ status: 1, publishAt: 1 });
 storySchema.index({ user: 1, status: 1, updatedAt: -1 });
+storySchema.index(
+  { user: 1, clientStoryId: 1 },
+  { unique: true, partialFilterExpression: { clientStoryId: { $type: 'string' } } }
+);
 
 storySchema.statics.ttlMs = STORY_TTL_MS;
 storySchema.statics.maxDurationMs = MAX_DURATION_MS;
@@ -103,6 +108,7 @@ storySchema.methods.toPublicJSON = function toPublicJSON() {
   return {
     id: this._id,
     user: this.user?._id || this.user,
+    clientStoryId: this.clientStoryId || undefined,
     mediaType: this.mediaType,
     filename: this.filename,
     mimetype: this.mimetype,
@@ -125,7 +131,7 @@ storySchema.methods.toPublicJSON = function toPublicJSON() {
     updatedAt: this.updatedAt,
     expiresAt: this.expiresAt,
     sealed: Boolean(this.sealed),
-        allowReplies: this.allowReplies !== false,
+    allowReplies: this.allowReplies !== false,
     viewOnce: Boolean(this.viewOnce),
     contentIv: this.contentIv || undefined,
     envelopes: Array.isArray(this.envelopes)
@@ -142,6 +148,7 @@ storySchema.methods.toPublicJSON = function toPublicJSON() {
     envelopeTargetHint: this.envelopeTargetHint || undefined,
   };
 };
+
 storySchema.methods.viewerCount = function viewerCount() {
   const named = Array.isArray(this.views) ? this.views.length : 0;
   return named + (this.anonymousViewCount || 0);

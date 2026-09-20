@@ -118,6 +118,18 @@ function parseEnvelopes(raw) {
 
 export async function createStory(req, res) {
   try {
+    const rawClientStoryId = req.body.clientStoryId;
+    const clientStoryId =
+      typeof rawClientStoryId === 'string' && /^[a-zA-Z0-9_-]{8,100}$/.test(rawClientStoryId.trim())
+        ? rawClientStoryId.trim()
+        : null;
+    if (rawClientStoryId != null && !clientStoryId) {
+      return res.status(400).json({ success: false, error: 'Invalid client story id' });
+    }
+    if (clientStoryId) {
+      const existing = await Story.findOne({ user: req.user._id, clientStoryId }).populate('user', 'username avatarPath');
+      if (existing) return res.status(200).json({ success: true, data: existing.toPublicJSON() });
+    }
     if (!req.file?.buffer) {
       return res.status(400).json({ success: false, error: 'Media file is required' });
     }
@@ -242,6 +254,7 @@ export async function createStory(req, res) {
 
     const story = await Story.create({
       user: req.user._id,
+      clientStoryId: clientStoryId || undefined,
       mediaType,
       filename: req.file.originalname || objectName,
       mimetype: mimetype || req.file.mimetype,
