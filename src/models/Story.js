@@ -17,6 +17,13 @@ const storyEnvelopeSchema = new mongoose.Schema(
   },
   { _id: false }
 );
+const storyMentionSchema = new mongoose.Schema(
+  {
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    visibility: { type: String, enum: ['public', 'hidden'], default: 'public' },
+  },
+  { _id: false }
+);
 
 const storySchema = new mongoose.Schema(
   {
@@ -67,6 +74,7 @@ const storySchema = new mongoose.Schema(
     envelopeTargetHint: { type: String, default: undefined },
     /** View-once: story becomes permanently unavailable to a viewer after they open it once. */
     viewOnce: { type: Boolean, default: false },
+    mentions: { type: [storyMentionSchema], default: undefined },
     views: {
       type: [
         {
