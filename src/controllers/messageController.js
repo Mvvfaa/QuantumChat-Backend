@@ -205,6 +205,113 @@ export function toClientMessage(doc, viewerId) {
   return message;
 }
 
+function isMessageHiddenByClear(message, user) {
+  const key = message.group
+    ? `group:${String(message.group)}`
+    : conversationKey({ from: message.from, to: message.to });
+  const createdAt = new Date(message.createdAt).getTime();
+  const attachmentCategoryValue = message.mediaCategory || attachmentCategory(message.attachment);
+  return (user.clearedConversations || []).some((entry) => {
+    if (entry.conversationKey !== key || !entry.clearedAt) return false;
+    if (createdAt > new Date(entry.clearedAt).getTime()) return false;
+    const scope = entry.scope || 'all';
+    if (scope === 'all') return true;
+    if (scope === 'text') return !attachmentCategoryValue;
+    return attachmentCategoryValue === scope;
+  });
+}
+
+async function findMessageForUser(messageId, userId) {
+  const message = await Message.findById(messageId).populate('attachment', ATTACHMENT_POPULATE);
+  if (!message) return null;
+  const uid = String(userId);
+  if (!message.group) {
+    return [String(message.from), String(message.to)] .includes(uid) ? message : null;
+  }
+  const group = await Group.findById(message.group).select('members');
+  return group?.members?.some((memberId) => String(memberId) === uid) ? message : null;
+}
+
+export async function getImportantMessages(req, res) {
+  try {
+    const user = await User.findById(req.user._id).select('importantMessages clearedConversations');
+    const references = Array.isArray(user?.importantMessages) ? user.importantMessages : [];
+    const ids = references
+      .map((entry) => entry.messageId)
+      .filter((id) => mongoose.isValidObjectId(id));
+    if (!ids.length) return res.json({ success: true, data: { messages: [], entries: [] } });
+
+    const rows = await Message.find({ _id: { $in: ids }, ...notExpiredFilter() })
+      .populate('attachment', ATTACHMENT_POPULATE)
+      .sort({ createdAt: -1 });
+    const groupIds = [...new Set(rows.filter((message) => message.group).map((message) => String(message.group)))];
+    const groups = groupIds.length
+      ? await Group.find({ _id: { $in: groupIds }, members: req.user._id }).select('_id name')
+      : [];
+    const allowedGroups = new Map(groups.map((group) => [String(group._id), group]));
+    const allowed = rows.filter((message) => {
+      const direct = !message.group && [String(message.from), String(message.to)].includes(String(req.user._id));
+      const groupAllowed = message.group && allowedGroups.has(String(message.group));
+      return (direct || groupAllowed) && !isMessageHiddenByClear(message, user);
+    });
+    const allowedIds = new Set(allowed.map((message) => String(message._id)));
+    const validReferences = references.filter((entry) => allowedIds.has(String(entry.messageId)));
+    if (validReferences.length !== references.length) {
+      user.importantMessages = validReferences;
+      await user.save();
+    }
+
+    res.json({
+      success: true,
+      data: {
+        messages: allowed.map((message) => toClientMessage(message, req.user._id)),
+        entries: validReferences.map((entry) => ({ messageId: String(entry.messageId), markedAt: entry.markedAt })),
+      },
+    });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+}
+
+export async function markMessageImportant(req, res) {
+  try {
+    const { messageId } = req.params;
+    if (!mongoose.isValidObjectId(messageId)) {
+      return res.status(400).json({ success: false, error: 'Invalid message id' });
+    }
+    const message = await findMessageForUser(messageId, req.user._id);
+    if (!message) return res.status(404).json({ success: false, error: 'Message not found' });
+    if (isMessageHiddenByClear(message, req.user)) {
+      return res.status(404).json({ success: false, error: 'Message is no longer available' });
+    }
+    const user = await User.findById(req.user._id).select('importantMessages');
+    const references = Array.isArray(user.importantMessages) ? user.importantMessages : [];
+    if (!references.some((entry) => String(entry.messageId) === messageId)) {
+      user.importantMessages = [{ messageId, markedAt: new Date() }, ...references];
+      await user.save();
+    }
+    res.json({ success: true, data: { messageId, important: true } });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+}
+
+export async function unmarkMessageImportant(req, res) {
+  try {
+    const { messageId } = req.params;
+    if (!mongoose.isValidObjectId(messageId)) {
+      return res.status(400).json({ success: false, error: 'Invalid message id' });
+    }
+    const user = await User.findById(req.user._id).select('importantMessages');
+    user.importantMessages = (user.importantMessages || [])
+      .filter((entry) => String(entry.messageId) !== messageId);
+    await user.save();
+    res.json({ success: true, data: { messageId, important: false } });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+}
+
 function emitToParticipants(io, message, event, payload) {
   if (!io || !message) return;
   const from = message.from?.toString?.() || String(message.from);
@@ -388,6 +495,7 @@ export async function sendMessage(req, res) {
   try {
     const {
       to,
+      clientMessageId,
       forRecipient,
       forSender,
       attachmentId,
@@ -405,6 +513,19 @@ export async function sendMessage(req, res) {
         success: false,
         error: 'to, forRecipient and forSender (each a sealed-box envelope) are all required',
       });
+    }
+    const cleanClientMessageId =
+      typeof clientMessageId === 'string' && /^[a-zA-Z0-9_-]{8,100}$/.test(clientMessageId.trim())
+        ? clientMessageId.trim()
+        : null;
+    if (clientMessageId != null && !cleanClientMessageId) {
+      return res.status(400).json({ success: false, error: 'Invalid client message id' });
+    }
+    if (cleanClientMessageId) {
+      const existing = await Message.findOne({ from: req.user._id, clientMessageId: cleanClientMessageId });
+      if (existing) {
+        return res.status(200).json({ success: true, data: toClientMessage(existing) });
+      }
     }
     const toOid = toObjectId(to);
     if (!toOid) {
@@ -484,6 +605,7 @@ export async function sendMessage(req, res) {
 
     const created = await Message.create({
       from: req.user._id,
+      clientMessageId: clientMessageId || undefined,
       to: toOid,
       forRecipient: normalizeEnvelope(forRecipient),
       forSender: normalizeEnvelope(forSender),
@@ -1011,6 +1133,10 @@ export async function deleteMessage(req, res) {
 
     await removeAttachmentFiles(message.attachment);
     await Message.deleteOne({ _id: message._id });
+    await User.updateMany(
+      { 'importantMessages.messageId': message._id },
+      { $pull: { importantMessages: { messageId: message._id } } },
+    );
 
     const io = req.app.get('io');
     if (message.group) {

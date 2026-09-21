@@ -5,6 +5,7 @@ const HEX_64 = /^[0-9a-f]{64}$/i;
 const attachmentSchema = new mongoose.Schema(
   {
     owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    clientUploadId: { type: String, trim: true, maxlength: 100 },
     recipient: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     group: { type: mongoose.Schema.Types.ObjectId, ref: 'Group', index: true },
     filename: { type: String, required: true },
@@ -51,5 +52,10 @@ attachmentSchema.pre('validate', function ensureShape(next) {
   this.encryption = 'sealed';
   next();
 });
+
+attachmentSchema.index(
+  { owner: 1, clientUploadId: 1 },
+  { unique: true, partialFilterExpression: { clientUploadId: { $type: 'string' } } },
+);
 
 export default mongoose.model('Attachment', attachmentSchema, 'attachments');

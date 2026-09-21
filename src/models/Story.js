@@ -28,6 +28,7 @@ const storyMentionSchema = new mongoose.Schema(
 const storySchema = new mongoose.Schema(
   {
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+    clientStoryId: { type: String, trim: true, maxlength: 100 },
     mediaType: { type: String, enum: ['image', 'video', 'audio', 'text'], required: true },
     filename: { type: String, required: true },
     mimetype: { type: String, required: true },
@@ -40,6 +41,15 @@ const storySchema = new mongoose.Schema(
     },
     durationMs: { type: Number, default: 0, max: MAX_DURATION_MS },
     caption: { type: String, maxlength: 200, default: '' },
+    captionMode: { type: String, enum: ['fixed', 'free'], default: 'fixed' },
+    captionStyle: {
+      x: { type: Number, min: 0, max: 100, default: 50 },
+      y: { type: Number, min: 0, max: 100, default: 85 },
+      fontSize: { type: Number, min: 12, max: 48, default: 22 },
+      color: { type: String, maxlength: 20, default: '#ffffff' },
+      background: { type: String, maxlength: 30, default: 'rgba(0,0,0,0.35)' },
+      align: { type: String, enum: ['left', 'center', 'right'], default: 'center' },
+    },
     /** Plaintext status body (unsealed text stories only). */
     textContent: { type: String, maxlength: 700, default: '' },
     /** Visual style for text stories. */
@@ -100,6 +110,10 @@ const storySchema = new mongoose.Schema(
 
 storySchema.index({ status: 1, publishAt: 1 });
 storySchema.index({ user: 1, status: 1, updatedAt: -1 });
+storySchema.index(
+  { user: 1, clientStoryId: 1 },
+  { unique: true, partialFilterExpression: { clientStoryId: { $type: 'string' } } }
+);
 
 storySchema.statics.ttlMs = STORY_TTL_MS;
 storySchema.statics.maxDurationMs = MAX_DURATION_MS;
@@ -111,12 +125,25 @@ storySchema.methods.toPublicJSON = function toPublicJSON() {
   return {
     id: this._id,
     user: this.user?._id || this.user,
+    clientStoryId: this.clientStoryId || undefined,
     mediaType: this.mediaType,
     filename: this.filename,
     mimetype: this.mimetype,
     size: this.size,
     durationMs: this.durationMs || 0,
     caption: this.caption || '',
+    captionMode: this.captionMode || 'fixed',
+    captionStyle:
+      this.captionMode === 'free'
+        ? {
+            x: this.captionStyle?.x ?? 50,
+            y: this.captionStyle?.y ?? 85,
+            fontSize: this.captionStyle?.fontSize ?? 22,
+            color: this.captionStyle?.color || '#ffffff',
+            background: this.captionStyle?.background || 'rgba(0,0,0,0.35)',
+            align: this.captionStyle?.align || 'center',
+          }
+        : undefined,
     textContent: this.mediaType === 'text' && !this.sealed ? this.textContent || '' : '',
     textStyle:
       this.mediaType === 'text'
@@ -133,7 +160,7 @@ storySchema.methods.toPublicJSON = function toPublicJSON() {
     updatedAt: this.updatedAt,
     expiresAt: this.expiresAt,
     sealed: Boolean(this.sealed),
-        allowReplies: this.allowReplies !== false,
+    allowReplies: this.allowReplies !== false,
     viewOnce: Boolean(this.viewOnce),
     contentIv: this.contentIv || undefined,
     envelopes: Array.isArray(this.envelopes)
@@ -150,6 +177,7 @@ storySchema.methods.toPublicJSON = function toPublicJSON() {
     envelopeTargetHint: this.envelopeTargetHint || undefined,
   };
 };
+
 storySchema.methods.viewerCount = function viewerCount() {
   const named = Array.isArray(this.views) ? this.views.length : 0;
   return named + (this.anonymousViewCount || 0);

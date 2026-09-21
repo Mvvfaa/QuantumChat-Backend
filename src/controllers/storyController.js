@@ -43,6 +43,30 @@ function hasViewerConsumed(story, viewerId) {
   return (story.anonymousViewerHashes || []).includes(hash);
 }
 
+function parseCaptionMode(raw) {
+  return String(raw || 'fixed').toLowerCase() === 'free' ? 'free' : 'fixed';
+}
+
+function parseCaptionStyle(raw) {
+  let obj = raw;
+  if (typeof raw === 'string') {
+    try { obj = JSON.parse(raw); } catch { return null; }
+  }
+  if (!obj || typeof obj !== 'object') return null;
+  const clamp = (n, min, max, fallback) => {
+    const v = Number(n);
+    return Number.isFinite(v) ? Math.min(Math.max(v, min), max) : fallback;
+  };
+  return {
+    x: clamp(obj.x, 0, 100, 50),
+    y: clamp(obj.y, 0, 100, 85),
+    fontSize: clamp(obj.fontSize, 12, 48, 22),
+    color: typeof obj.color === 'string' ? obj.color.slice(0, 20) : '#ffffff',
+    background: typeof obj.background === 'string' ? obj.background.slice(0, 30) : 'rgba(0,0,0,0.35)',
+    align: ['left', 'center', 'right'].includes(obj.align) ? obj.align : 'center',
+  };
+}
+
 function parseStoryStatus(raw) {
   const s = String(raw || 'published').toLowerCase();
   if (s === 'draft' || s === 'scheduled' || s === 'published') return s;
@@ -118,6 +142,18 @@ function parseEnvelopes(raw) {
 
 export async function createStory(req, res) {
   try {
+    const rawClientStoryId = req.body.clientStoryId;
+    const clientStoryId =
+      typeof rawClientStoryId === 'string' && /^[a-zA-Z0-9_-]{8,100}$/.test(rawClientStoryId.trim())
+        ? rawClientStoryId.trim()
+        : null;
+    if (rawClientStoryId != null && !clientStoryId) {
+      return res.status(400).json({ success: false, error: 'Invalid client story id' });
+    }
+    if (clientStoryId) {
+      const existing = await Story.findOne({ user: req.user._id, clientStoryId }).populate('user', 'username avatarPath');
+      if (existing) return res.status(200).json({ success: true, data: existing.toPublicJSON() });
+    }
     if (!req.file?.buffer) {
       return res.status(400).json({ success: false, error: 'Media file is required' });
     }
@@ -169,6 +205,10 @@ export async function createStory(req, res) {
         : typeof req.body.caption === 'string'
           ? req.body.caption.trim().slice(0, 200)
           : '';
+
+    const captionMode = sealed ? 'fixed' : parseCaptionMode(req.body.captionMode);
+    const captionStyle =
+      !sealed && captionMode === 'free' ? parseCaptionStyle(req.body.captionStyle) || undefined : undefined;
 
     const allowReplies = parseSealedFlag(
       req.body.allowReplies === undefined ? true : req.body.allowReplies
@@ -242,6 +282,7 @@ export async function createStory(req, res) {
 
     const story = await Story.create({
       user: req.user._id,
+      clientStoryId: clientStoryId || undefined,
       mediaType,
       filename: req.file.originalname || objectName,
       mimetype: mimetype || req.file.mimetype,
@@ -250,6 +291,8 @@ export async function createStory(req, res) {
       storageProvider: stored.provider,
       durationMs,
       caption,
+      captionMode,
+      captionStyle,
       ttlMs,
       status,
       publishAt: status === 'scheduled' ? publishAt : null,
@@ -683,6 +726,13 @@ export async function updateStory(req, res) {
     }
     if (!story.sealed && typeof req.body?.caption === 'string') {
       story.caption = req.body.caption.trim().slice(0, 200);
+    }
+    if (!story.sealed && typeof req.body?.captionMode === 'string') {
+      story.captionMode = parseCaptionMode(req.body.captionMode);
+    }
+    if (!story.sealed && story.captionMode === 'free' && req.body?.captionStyle !== undefined) {
+      const style = parseCaptionStyle(req.body.captionStyle);
+      if (style) story.captionStyle = style;
     }
 
     const nextStatus = req.body?.status !== undefined ? parseStoryStatus(req.body.status) : story.status;

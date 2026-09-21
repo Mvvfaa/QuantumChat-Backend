@@ -351,6 +351,13 @@ const userSchema = new mongoose.Schema(
       type: [clearedChatSchema],
       default: [],
     },
+    importantMessages: {
+      type: [{
+        messageId: { type: mongoose.Schema.Types.ObjectId, ref: 'Message', required: true },
+        markedAt: { type: Date, default: Date.now },
+      }],
+      default: [],
+    },
     blockedUsers: [
   {
     type: mongoose.Schema.Types.ObjectId,
@@ -643,6 +650,10 @@ userSchema.methods.toSelfJSON = function toSelfJSON() {
       conversationKey: c.conversationKey,
       clearedAt: c.clearedAt,
       scope: c.scope || 'all',
+    })) : [],
+    importantMessages: Array.isArray(this.importantMessages) ? this.importantMessages.map((entry) => ({
+      messageId: String(entry.messageId),
+      markedAt: entry.markedAt,
     })) : [],
     totpEnabled: Boolean(this.totpEnabled),
     referralCode: this.referralCode || null,

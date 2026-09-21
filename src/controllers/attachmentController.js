@@ -36,6 +36,7 @@ export async function initAttachmentUpload(req, res) {
     const {
       recipientId,
       groupId,
+      clientUploadId,
       filename,
       mimetype,
       size,
@@ -51,6 +52,29 @@ export async function initAttachmentUpload(req, res) {
     if (!filename || typeof filename !== 'string') {
       return res.status(400).json({ success: false, error: 'filename is required' });
     }
+    const cleanClientUploadId =
+      typeof clientUploadId === 'string' && /^[a-zA-Z0-9_-]{8,100}$/.test(clientUploadId.trim())
+        ? clientUploadId.trim()
+        : null;
+    if (clientUploadId != null && !cleanClientUploadId) {
+      return res.status(400).json({ success: false, error: 'Invalid client upload id' });
+    }
+    if (cleanClientUploadId) {
+      const existingAttachment = await Attachment.findOne({ owner: req.user._id, clientUploadId: cleanClientUploadId });
+      if (existingAttachment) {
+        return res.status(200).json({
+          success: true,
+          data: { finalizedAttachmentId: existingAttachment._id, alreadyFinalized: true },
+        });
+      }
+      const existingPending = await PendingAttachmentUpload.findOne({ owner: req.user._id, clientUploadId: cleanClientUploadId });
+      if (existingPending) {
+        return res.status(200).json({
+          success: true,
+          data: { pendingUploadId: existingPending._id, alreadyInitialized: true },
+        });
+      }
+    }
     const numericSize = Number(size);
     if (!Number.isFinite(numericSize) || numericSize <= 0) {
       return res.status(400).json({ success: false, error: 'A valid size is required' });
@@ -62,6 +86,7 @@ export async function initAttachmentUpload(req, res) {
     const storage = getStorage();
     const pending = new PendingAttachmentUpload({
       owner: req.user._id,
+      clientUploadId: cleanClientUploadId || undefined,
       filename,
       mimetype: mimetype || 'application/octet-stream',
       size: numericSize,
@@ -300,13 +325,33 @@ export async function uploadPendingAttachmentChunk(req, res) {
 }
 
 export async function finalizeAttachmentUpload(req, res) {
-  const { pendingUploadId, recipientDirectUploadId, senderDirectUploadId } = req.body;
+  const { pendingUploadId, clientUploadId, recipientDirectUploadId, senderDirectUploadId } = req.body;
   let pending;
   try {
-    if (!pendingUploadId || !mongoose.isValidObjectId(pendingUploadId)) {
+    const cleanClientUploadId =
+      typeof clientUploadId === 'string' && /^[a-zA-Z0-9_-]{8,100}$/.test(clientUploadId.trim())
+        ? clientUploadId.trim()
+        : null;
+    if (clientUploadId != null && !cleanClientUploadId) {
+      return res.status(400).json({ success: false, error: 'Invalid client upload id' });
+    }
+    if (cleanClientUploadId) {
+      const existingAttachment = await Attachment.findOne({ owner: req.user._id, clientUploadId: cleanClientUploadId });
+      if (existingAttachment) {
+        return res.status(200).json({
+          success: true,
+          data: { id: existingAttachment._id, filename: existingAttachment.filename, mimetype: existingAttachment.mimetype, size: existingAttachment.size, alreadyFinalized: true },
+        });
+      }
+    }
+    const cleanPendingUploadId =
+      typeof pendingUploadId === 'string' && mongoose.isValidObjectId(pendingUploadId)
+        ? pendingUploadId
+        : null;
+    if (!cleanPendingUploadId) {
       return res.status(400).json({ success: false, error: 'Valid pendingUploadId is required' });
     }
-    pending = await PendingAttachmentUpload.findById(pendingUploadId);
+    pending = await PendingAttachmentUpload.findById(cleanPendingUploadId);
     if (!pending || pending.owner.toString() !== req.user._id.toString()) {
       return res.status(404).json({ success: false, error: 'Pending upload not found or expired' });
     }
@@ -344,6 +389,7 @@ export async function finalizeAttachmentUpload(req, res) {
 
       const attachment = await Attachment.create({
         owner: req.user._id,
+        clientUploadId: cleanClientUploadId || pending.clientUploadId || undefined,
         group: pending.group,
         filename: pending.filename,
         mimetype: pending.mimetype,
@@ -375,6 +421,7 @@ export async function finalizeAttachmentUpload(req, res) {
 
     const attachment = await Attachment.create({
       owner: req.user._id,
+      clientUploadId: cleanClientUploadId || pending.clientUploadId || undefined,
       recipient: pending.recipient,
       filename: pending.filename,
       mimetype: pending.mimetype,

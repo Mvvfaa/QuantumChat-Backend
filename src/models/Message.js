@@ -61,6 +61,8 @@ const editHistoryEntrySchema = new mongoose.Schema(
 const messageSchema = new mongoose.Schema(
   {
     from: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+    // Client-generated id used to make safe offline retries idempotent.
+    clientMessageId: { type: String, maxlength: 100, trim: true },
     to: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
     forRecipient: { type: envelopeSchema },
     forSender: { type: envelopeSchema },
@@ -110,7 +112,7 @@ const messageSchema = new mongoose.Schema(
       allowForward: { type: Boolean, default: true },
       forwardUntil: { type: Date, default: null },
     },
-      expiresAt: { type: Date, default: null, index: true },
+    expiresAt: { type: Date, default: null },
     // Time Capsule: sealed exactly like any other DM at send time — the
     // encryption doesn't change. The server just withholds forRecipient/
     // forSender from API responses (see toClientMessage) until unlocksAt
@@ -139,6 +141,10 @@ const messageSchema = new mongoose.Schema(
 messageSchema.index({ from: 1, to: 1, createdAt: 1 });
 messageSchema.index({ group: 1, createdAt: 1 });
 messageSchema.index({ decoyFor: 1, from: 1, to: 1, createdAt: 1 });
+messageSchema.index(
+  { from: 1, clientMessageId: 1 },
+  { unique: true, partialFilterExpression: { clientMessageId: { $type: 'string' } } }
+);
 messageSchema.index({ 'aiMetadata.requestId': 1 }, { unique: true, sparse: true });
 messageSchema.index({ expiresAt: 1 }, { sparse: true });
 messageSchema.index({ timeCapsule: 1, unlocksAt: 1, capsuleDeliveredAt: 1 }, { sparse: true });
