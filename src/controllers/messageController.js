@@ -737,9 +737,19 @@ export async function publishQuantumAIDirectResponse(req, res) {
   }
 }
 
+/** Path segments registered as static message routes — never treat as peer ids. */
+const RESERVED_MESSAGE_PEER_IDS = new Set([
+  'important',
+  'sync',
+  'quantum-ai-response',
+]);
+
 export async function getConversation(req, res) {
   try {
     const { userId } = req.params;
+    if (RESERVED_MESSAGE_PEER_IDS.has(String(userId || '').toLowerCase())) {
+      return res.status(404).json({ success: false, error: 'Not found' });
+    }
     const peerOid = toObjectId(userId);
     if (!peerOid) {
       return res.status(400).json({ success: false, error: 'Invalid user id' });
@@ -997,6 +1007,9 @@ export async function syncMessages(req, res) {
 export async function markConversationRead(req, res) {
   try {
     const { userId } = req.params;
+    if (RESERVED_MESSAGE_PEER_IDS.has(String(userId || '').toLowerCase())) {
+      return res.status(404).json({ success: false, error: 'Not found' });
+    }
     if (!mongoose.isValidObjectId(userId)) {
       return res.status(400).json({ success: false, error: 'Invalid user id' });
     }
