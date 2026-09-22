@@ -44,6 +44,8 @@ router.use(requireAuthLean);
 router.use(readVaultUnlock);
 router.post('/', sendMessage);
 router.post('/quantum-ai-response', publishQuantumAIDirectResponse);
+// Must stay above GET /:userId — otherwise "important" is parsed as a peer id
+// and the client shows stacked "Invalid user id" toasts on every chat load.
 router.get('/important', getImportantMessages);
 router.get('/:messageId/forward-check', checkForwardAllowed);
 router.post('/:messageId/view-once', openViewOnce);
