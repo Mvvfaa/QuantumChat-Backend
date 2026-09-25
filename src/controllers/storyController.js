@@ -261,10 +261,11 @@ export async function createStory(req, res) {
     }
 
     const ext = path.extname(req.file.originalname || '').toLowerCase();
-    // Sealed ciphertext must not keep image/video extensions — Cloudinary (and
-    // some CDNs) mis-route or reject raw blobs that look like media by name.
+    // Sealed ciphertext must not keep image/video extensions — Cloudinary can
+    // mis-route raw blobs that look like media by name. Use .enc (same as
+    // chat attachments). Do NOT use .bin — Cloudinary rejects that extension.
     const safeExt = sealed
-      ? '.bin'
+      ? '.enc'
       : ext === '.svg'
         ? ''
         : ext;
