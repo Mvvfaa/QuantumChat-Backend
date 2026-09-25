@@ -359,12 +359,21 @@ export async function createStory(req, res) {
     }
 
     const ext = path.extname(req.file.originalname || '').toLowerCase();
-    const safeExt = ext === '.svg' ? '' : ext;
+    // Sealed ciphertext must not keep image/video extensions — Cloudinary can
+    // mis-route raw blobs that look like media by name. Use .enc (same as
+    // chat attachments). Do NOT use .bin — Cloudinary rejects that extension.
+    const safeExt = sealed
+      ? '.enc'
+      : ext === '.svg'
+        ? ''
+        : ext;
     const objectName = newObjectName('stories', safeExt);
     const stored = await getStorage().put(
       req.file.buffer,
       objectName,
-      mimetype || req.file.mimetype || 'application/octet-stream',
+      sealed
+        ? 'application/octet-stream'
+        : mimetype || req.file.mimetype || 'application/octet-stream',
       String(req.user._id)
     );
 
@@ -664,7 +673,17 @@ export async function getStoryMedia(req, res) {
     res.send(bytes);
   } catch (err) {
     if (!res.headersSent) {
-      res.status(404).json({ success: false, error: 'Media missing' });
+      const missing = err?.code === 'ENOENT' || /not found|missing/i.test(String(err?.message || ''));
+      console.error('[stories/media]', {
+        storyId: req.params?.id,
+        code: err?.code,
+        status: err?.status,
+        message: err?.message,
+      });
+      res.status(missing ? 404 : 502).json({
+        success: false,
+        error: missing ? 'Media missing' : 'Failed to load story media',
+      });
     }
   }
 }

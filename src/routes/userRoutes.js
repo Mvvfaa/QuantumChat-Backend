@@ -101,9 +101,8 @@ router.get('/me/ai-capsules', listAiCapsules);
 router.get('/me/push/vapid-public-key', getPushVapidPublicKey);
 router.post('/me/push/subscribe', subscribePush);
 router.delete('/me/push/subscribe', unsubscribePush);
-router.post('/:id/block', blockUser);
-router.delete('/:id/block', unblockUser);
-router.get('/:id/avatar', getAvatar);
+// Static collection routes must be registered before /:id so words like
+// "friends" / "discover" are never parsed as user ids.
 router.get('/discover', discoverUsers);
 router.get('/lookup', contactLookupLimiter, lookupContact);
 router.get('/friends', listFriends);
@@ -113,6 +112,9 @@ router.delete('/friend-requests/:id', cancelFriendRequest);
 router.post('/friend-requests/:id/accept', acceptFriendRequest);
 router.post('/friend-requests/:id/decline', declineFriendRequest);
 router.delete('/friends/:id', removeFriend);
+router.post('/:id/block', blockUser);
+router.delete('/:id/block', unblockUser);
+router.get('/:id/avatar', getAvatar);
 router.get('/:id', getUser);
 router.get('/me/vault-lock/status', getVaultStatus);
 router.post('/me/vault-lock/set-password', vaultAuthLimiter, setVaultPassword);
