@@ -60,6 +60,17 @@ export function getStorage() {
   }
 
   if (process.env.STORAGE_PROVIDER === 'local') {
+    // Vercel has an ephemeral filesystem — never write "local" there even if
+    // someone set STORAGE_PROVIDER=local in the dashboard by mistake.
+    if (isVercelRuntime()) {
+      if (hasCloudinaryCredentials()) {
+        defaultCached = cloudinaryAdapter();
+        return defaultCached;
+      }
+      throw new Error(
+        'STORAGE_PROVIDER=local is not supported on Vercel. Remove it and set CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET, then Redeploy.',
+      );
+    }
     defaultCached = localAdapter();
     return defaultCached;
   }
