@@ -1,9 +1,10 @@
+import crypto from 'crypto';
 import mongoose from 'mongoose';
 import path from 'path';
-import crypto from 'crypto';
-import { getStorage, isSafeImageMime, newObjectName, readStoredObject, deleteStoredObject, safeImageContentType } from '../middleware/upload.js';
+import { deleteStoredObject, getStorage, isSafeImageMime, newObjectName, readStoredObject, safeImageContentType } from '../middleware/upload.js';
 import Story from '../models/Story.js';
 import User from '../models/User.js';
+import { notifyUser } from '../services/pushService.js';
 import { areUsersBlocked } from './userController.js';
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
@@ -13,6 +14,93 @@ function mediaTypeFromMime(mimetype = '') {
   if (mimetype.startsWith('video/')) return 'video';
   if (mimetype.startsWith('audio/')) return 'audio';
   return null;
+}
+const MAX_MENTIONS = 10;
+
+function parseMentions(raw) {
+  let list = raw;
+  if (typeof raw === 'string') {
+    if (!raw.trim()) return [];
+    try {
+      list = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (list == null) return [];
+  if (!Array.isArray(list)) return null;
+  if (list.length > MAX_MENTIONS) return null;
+
+  const seen = new Set();
+  const out = [];
+  for (const item of list) {
+    if (!item || !mongoose.isValidObjectId(item.user)) return null;
+    const visibility = item.visibility === 'hidden' ? 'hidden' : 'public';
+    const userId = String(item.user);
+    if (seen.has(userId)) continue; // dedupe, keep first occurrence
+    seen.add(userId);
+    out.push({ user: userId, visibility });
+  }
+  return out;
+}
+
+async function assertMentionsAllowed(authorId, mentions) {
+  if (!mentions.length) return null;
+  const selfId = String(authorId);
+  if (mentions.some((m) => m.user === selfId)) {
+    return 'You cannot mention yourself';
+  }
+  const ids = mentions.map((m) => m.user);
+  const users = await User.find({ _id: { $in: ids } }).select('_id blockedUsers');
+  if (users.length !== ids.length) {
+    return 'One or more mentioned users do not exist';
+  }
+  for (const u of users) {
+    if (await areUsersBlocked(authorId, u._id)) {
+      return 'You cannot mention a blocked user';
+    }
+  }
+  return null;
+}
+
+/**
+ * The ONLY code path allowed to turn story.mentions into anything a client
+ * sees. viewerId === null means "no specific viewer" — used for the
+ * io.emit broadcast, which reaches every connected socket with no way to
+ * target just the owner, so it must always resolve to public-only,
+ * regardless of who the story belongs to.
+ */
+function visibleMentions(story, viewerId) {
+  const mentions = Array.isArray(story.mentions) ? story.mentions : [];
+  if (!mentions.length) return [];
+  const ownerId = String(story.user?._id || story.user);
+  const isOwner = viewerId != null && String(viewerId) === ownerId;
+  return mentions
+    .filter((m) => isOwner || m.visibility === 'public')
+    .map((m) => ({
+      user: {
+        id: m.user?._id || m.user,
+        username: m.user?.username || 'User',
+        hasAvatar: Boolean(m.user?.avatarPath),
+      },
+      visibility: m.visibility,
+    }));
+}
+
+async function notifyMentionedUsers(story, authorUsername) {
+  const mentions = Array.isArray(story.mentions) ? story.mentions : [];
+  for (const m of mentions) {
+    const targetId = String(m.user?._id || m.user);
+    if (targetId === String(story.user?._id || story.user)) continue;
+    notifyUser(targetId, {
+      title: 'QuantumChat',
+      body: `${authorUsername || 'Someone'} mentioned you in their story`,
+      kind: 'story_mention',
+      conversationKey: `story-mention:${story._id}`,
+      url: `/stories/${story._id}`,
+      data: { storyId: String(story._id) },
+    }).catch(() => {});
+  }
 }
 
 function parseSealedFlag(value) {
@@ -92,6 +180,7 @@ function parsePublishAt(raw) {
 function storyOwnerPayload(story, userDoc) {
   return {
     ...story.toPublicJSON(),
+    mentions: visibleMentions(story, story.user?._id || story.user),
     user: {
       id: userDoc?._id || story.user,
       username: userDoc?.username || 'User',
@@ -156,6 +245,15 @@ export async function createStory(req, res) {
     }
     if (!req.file?.buffer) {
       return res.status(400).json({ success: false, error: 'Media file is required' });
+    }
+
+    const mentions = parseMentions(req.body.mentions);
+    if (mentions === null) {
+      return res.status(400).json({ success: false, error: 'Invalid mentions payload' });
+    }
+    const mentionError = await assertMentionsAllowed(req.user._id, mentions);
+    if (mentionError) {
+      return res.status(400).json({ success: false, error: mentionError });
     }
 
     const sealed = parseSealedFlag(req.body.sealed);
@@ -298,6 +396,7 @@ export async function createStory(req, res) {
       size: req.file.size,
       storagePath: stored.key,
       storageProvider: stored.provider,
+      mentions: mentions.length ? mentions : undefined,
       durationMs,
       caption,
       captionMode,
@@ -313,11 +412,17 @@ export async function createStory(req, res) {
       envelopes: sealed ? envelopes : undefined,
     });
 
+    if (story.mentions?.length) {
+      await story.populate('mentions.user', 'username avatarPath');
+    }
     const payload = storyOwnerPayload(story, req.user);
 
     if (status === 'published') {
       const io = req.app.get('io');
-      if (io) io.emit('story:new', payload);
+      if (io) {
+        io.emit('story:new', { ...payload, mentions: visibleMentions(story, null) });
+      }
+      await notifyMentionedUsers(story, req.user.username);
     }
 
     res.status(201).json({ success: true, data: payload });
@@ -335,7 +440,8 @@ export async function listStories(req, res) {
       expiresAt: { $gt: now },
     })
       .sort({ createdAt: -1 })
-      .populate('user', 'username avatarPath');
+      .populate('user', 'username avatarPath')
+      .populate('mentions.user', 'username avatarPath');
 
     const viewerId = String(req.user._id);
     const ownerIds = [
@@ -374,6 +480,7 @@ export async function listStories(req, res) {
           }
           return pub;
         })(),
+        mentions: visibleMentions(story, viewerId),
         user: {
           id: ownerId,
           username: story.user?.username || 'User',
@@ -823,9 +930,13 @@ export async function publishStory(req, res) {
     story.expiresAt = new Date(now + ttl);
     await story.save();
 
+    if (story.mentions?.length) {
+      await story.populate('mentions.user', 'username avatarPath');
+    }
     const payload = storyOwnerPayload(story, req.user);
     const io = req.app.get('io');
-    if (io) io.emit('story:new', payload);
+    if (io) io.emit('story:new', { ...payload, mentions: visibleMentions(story, null) });
+    await notifyMentionedUsers(story, req.user.username);
 
     res.json({ success: true, data: payload });
   } catch (err) {
