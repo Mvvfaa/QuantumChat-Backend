@@ -2,6 +2,10 @@
   "regions": ["bom1"],
   "rewrites": [
     {
+      "source": "/",
+      "destination": "/api/health"
+    },
+    {
       "source": "/(.*)",
       "destination": "/api"
     }
