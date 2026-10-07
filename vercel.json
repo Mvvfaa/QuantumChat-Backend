@@ -9,10 +9,5 @@
       "source": "/(.*)",
       "destination": "/api"
     }
-  ],
-  "functions": {
-    "api/index.js": {
-      "includeFiles": "{src/**,server.js}"
-    }
-  }
+  ]
 }
