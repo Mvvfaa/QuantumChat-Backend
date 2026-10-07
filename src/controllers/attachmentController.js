@@ -52,6 +52,11 @@ export async function initAttachmentUpload(req, res) {
     if (!filename || typeof filename !== 'string') {
       return res.status(400).json({ success: false, error: 'filename is required' });
     }
+        const safeFilename =
+      path
+        .basename(filename.replace(/\\/g, '/'))
+        .replace(/[\u0000-\u001f]/g, '')
+        .slice(0, 255) || 'file';
     const cleanClientUploadId =
       typeof clientUploadId === 'string' && /^[a-zA-Z0-9_-]{8,100}$/.test(clientUploadId.trim())
         ? clientUploadId.trim()
@@ -87,9 +92,10 @@ export async function initAttachmentUpload(req, res) {
     const pending = new PendingAttachmentUpload({
       owner: req.user._id,
       clientUploadId: cleanClientUploadId || undefined,
-      filename,
+          filename: safeFilename,
       mimetype: mimetype || 'application/octet-stream',
       size: numericSize,
+      
     });
 
     if (groupId) {
@@ -204,7 +210,10 @@ export async function uploadPendingAttachmentBytes(req, res) {
     if (!objectName) {
       return res.status(400).json({ success: false, error: `No ${slot} upload was requested for this session` });
     }
-
+    // Declared size is the ciphertext length; allow a small margin for client rounding.
+      if (req.file.buffer.length !== pending.size) {
+      return res.status(400).json({ success: false, error: 'Uploaded size does not match the declared size' });
+    }
     const stored = await getStorage().put(req.file.buffer, objectName, pending.mimetype, req.user._id);
     if (slot === 'sender') {
       pending.senderStoragePath = stored.key;
@@ -239,7 +248,7 @@ export async function uploadPendingAttachmentChunk(req, res) {
     if (!Number.isInteger(totalChunks) || totalChunks < 1) {
       return res.status(400).json({ success: false, error: 'Valid totalChunks is required' });
     }
-    if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+    if (typeof req.body === 'string' || Array.isArray(req.body) || !Buffer.isBuffer(req.body) || req.body.length === 0) {
       return res.status(400).json({ success: false, error: 'Chunk body is required' });
     }
 
@@ -262,6 +271,10 @@ export async function uploadPendingAttachmentChunk(req, res) {
     const storagePathField = slot === 'sender' ? 'senderStoragePath' : 'recipientStoragePath';
 
     const tempPath = pending[tempPathField] || chunkTempPath(pending._id, slot);
+    const alreadyWritten = await fs.stat(tempPath).then((s) => s.size).catch(() => 0);
+    if (alreadyWritten + req.body.length > pending.size) {
+      return res.status(400).json({ success: false, error: 'Upload exceeds the declared size' });
+    }
     await fs.appendFile(tempPath, req.body);
 
     // Atomic compare-and-swap on THIS slot's counter only. The recipient
@@ -309,7 +322,10 @@ export async function uploadPendingAttachmentChunk(req, res) {
       await fs.unlink(tempPath).catch(() => {});
       return res.status(400).json({ success: false, error: 'File too large' });
     }
-
+    if (assembled.length !== updated.size) {
+      await fs.unlink(tempPath).catch(() => {});
+      return res.status(400).json({ success: false, error: 'Uploaded size does not match the declared size' });
+    }
     const stored = await getStorage().put(assembled, objectName, updated.mimetype, req.user._id);
     await fs.unlink(tempPath).catch(() => {});
 

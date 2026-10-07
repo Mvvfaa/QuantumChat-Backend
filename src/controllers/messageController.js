@@ -11,22 +11,30 @@ import { notifyUser } from '../services/pushService.js';
 import { conversationKey, parseConversationKey } from '../utils/conversationKey.js';
 import { notExpiredFilter, resolveExpiresAt } from '../utils/messageExpiry.js';
 import { sealForPublicKey } from '../utils/sealedBox.js';
+import {
+  getDirectTranscriptTargetKey,
+  isDirectTranscriptTargetAllowed,
+} from '../utils/transcriptionAccess.js';
 import { toObjectId } from '../utils/toObjectId.js';
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
 const ATTACHMENT_POPULATE =
   'filename mimetype size nonce ephemeralPublicKey targetPublicKey forSenderNonce forSenderEphemeralPublicKey forSenderTargetPublicKey';
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
+
+function decodedLength(value) {
+  return typeof value === 'string' && BASE64.test(value) ? Buffer.from(value, 'base64').length : -1;
+}
 
 function validateEnvelope(envelope) {
+  if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) return false;
   return (
-    envelope &&
-    typeof envelope.ciphertext === 'string' &&
-    typeof envelope.nonce === 'string' &&
+    decodedLength(envelope.ciphertext) >= 16 && // nacl box adds a 16-byte authentication tag
+    decodedLength(envelope.nonce) === 24 && // nacl nonce length
     HEX_64.test(envelope.ephemeralPublicKey || '') &&
     HEX_64.test(envelope.targetPublicKey || '')
   );
 }
-
 function normalizeEnvelope(envelope) {
   return {
     ...envelope,
@@ -85,11 +93,13 @@ function mediaKindFromAttachment(attachment) {
   if (!attachment) return null;
   const mime = String(attachment.mimetype || '').toLowerCase();
   const name = String(attachment.filename || '').toLowerCase();
-  if (mime.startsWith('audio/') || /\.(webm|ogg|mp3|m4a|wav|aac)$/i.test(name) || /^voice-note/i.test(name)) {
+  if (mime.startsWith('video/')) return 'video';
+  if (mime.startsWith('audio/') || /^voice-note/i.test(name)) {
     return 'audio';
   }
   if (mime.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp)$/i.test(name)) return 'image';
-  if (mime.startsWith('video/') || /\.(mp4|webm|mov|mkv|avi)$/i.test(name)) return 'video';
+  if (/\.(mp4|webm|mov|mkv|avi)$/i.test(name)) return 'video';
+  if (/\.(ogg|mp3|m4a|wav|aac)$/i.test(name)) return 'audio';
   return null;
 }
 
@@ -202,6 +212,25 @@ export function toClientMessage(doc, viewerId) {
       message.attachment = null;
       message.locked = true;
     }
+  }
+  if (message.transcription) {
+    const entries = Array.isArray(message.transcription.entries)
+      ? message.transcription.entries
+      : [];
+    message.transcription = {
+      ...message.transcription,
+      claimToken: undefined,
+      claimLeaseUntil: undefined,
+      claimedBy: undefined,
+      entries: entries
+        .filter((entry) => Boolean(viewerId) && String(entry.user) === String(viewerId))
+        .map((entry) => ({
+          ...entry,
+          user: entry.user?.toString?.() || String(entry.user),
+          claimToken: undefined,
+          claimLeaseUntil: undefined,
+        })),
+    };
   }
   return message;
 }
@@ -492,6 +521,142 @@ export async function checkForwardAllowed(req, res) {
   }
 }
 
+export async function upsertTranscriptState(req, res) {
+  try {
+    const { messageId } = req.params;
+    const messageOid = toObjectId(messageId);
+    if (!messageOid) {
+      return res.status(400).json({ success: false, error: 'Invalid message id' });
+    }
+    const message = await Message.findById(messageOid);
+    if (!message) return res.status(404).json({ success: false, error: 'Message not found' });
+    const userId = String(req.user._id);
+    const expectedTargetPublicKey = getDirectTranscriptTargetKey(message, userId);
+    if (!expectedTargetPublicKey) {
+      return res.status(403).json({ success: false, error: 'Only direct-message participants can manage transcript state' });
+    }
+    if (message.viewOnce) {
+      return res.status(403).json({ success: false, error: 'View-once voice messages cannot be transcribed' });
+    }
+
+    const { action = 'claim', claimToken, status, language, encryptedText, nonce, ephemeralPublicKey, targetPublicKey, error } = req.body || {};
+    const transcription = message.transcription || {};
+    const entries = transcription.entries || [];
+    if (!transcription.entries) transcription.entries = entries;
+    let participant = entries.find((entry) => String(entry.user) === userId);
+
+    const participantPayload = (entry, includeClaimToken = false) => {
+      const payload = entry?.toObject ? entry.toObject() : { ...entry };
+      payload.user = String(payload.user);
+      if (!includeClaimToken) {
+        delete payload.claimToken;
+        delete payload.claimLeaseUntil;
+      }
+      return payload;
+    };
+
+    if (action === 'claim') {
+      if (participant?.status === 'completed' && participant.encryptedText) {
+        return res.json({
+          success: true,
+          data: { transcription: { participant: participantPayload(participant) } },
+        });
+      }
+      if (participant?.claimLeaseUntil && new Date(participant.claimLeaseUntil).getTime() > Date.now()) {
+        return res.status(409).json({ success: false, error: 'Transcript is already being generated for this participant' });
+      }
+
+      const token = crypto.randomBytes(16).toString('hex');
+      const lease = new Date(Date.now() + 60_000);
+      if (!participant) {
+        transcription.entries.push({
+          user: req.user._id,
+          status: 'running',
+          model: transcription.model || 'Xenova/whisper-tiny',
+          revision: transcription.revision || '5332fcc35e32a33b86612b9a57a89be7906102b1',
+          claimToken: token,
+          claimLeaseUntil: lease,
+          language: typeof language === 'string' ? language.slice(0, 32) : undefined,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+        participant = transcription.entries[transcription.entries.length - 1];
+      } else {
+        participant.status = 'running';
+        participant.claimToken = token;
+        participant.claimLeaseUntil = lease;
+        participant.language = typeof language === 'string' ? language.slice(0, 32) : participant.language;
+        participant.error = undefined;
+        participant.updatedAt = new Date();
+      }
+      message.transcription = transcription;
+      await message.save();
+      return res.json({
+        success: true,
+        data: { transcription: { participant: participantPayload(participant, true) } },
+      });
+    }
+
+    if (action === 'release') {
+      if (!participant || !claimToken || String(claimToken) !== String(participant.claimToken || '')) {
+        return res.status(409).json({ success: false, error: 'Transcript claim token is invalid or expired' });
+      }
+      participant.status = 'failed';
+      participant.claimToken = undefined;
+      participant.claimLeaseUntil = null;
+      participant.error = typeof error === 'string' && error.trim() ? error.slice(0, 500) : undefined;
+      participant.updatedAt = new Date();
+      message.transcription = transcription;
+      await message.save();
+      return res.json({
+        success: true,
+        data: { transcription: { participant: participantPayload(participant) } },
+      });
+    }
+
+    if (action === 'commit') {
+      if (!participant || !claimToken || String(claimToken) !== String(participant.claimToken || '')) {
+        return res.status(409).json({ success: false, error: 'Transcript claim token is invalid or expired' });
+      }
+      if (!participant.claimLeaseUntil || new Date(participant.claimLeaseUntil).getTime() < Date.now()) {
+        return res.status(409).json({ success: false, error: 'Transcript claim has expired' });
+      }
+      if (!encryptedText || !nonce || !ephemeralPublicKey || !targetPublicKey) {
+        return res.status(400).json({ success: false, error: 'Transcript ciphertext and envelope metadata are required' });
+      }
+      if (
+        !HEX_64.test(ephemeralPublicKey) ||
+        !isDirectTranscriptTargetAllowed(message, userId, targetPublicKey)
+      ) {
+        return res.status(403).json({ success: false, error: 'Transcript envelope must target the authenticated participant' });
+      }
+
+      participant.status = typeof status === 'string' ? status : 'completed';
+      participant.language = typeof language === 'string' ? language.slice(0, 32) : participant.language;
+      participant.claimToken = undefined;
+      participant.claimLeaseUntil = null;
+      participant.encryptedText = String(encryptedText);
+      participant.nonce = String(nonce);
+      participant.ephemeralPublicKey = String(ephemeralPublicKey).toLowerCase();
+      participant.targetPublicKey = String(targetPublicKey).toLowerCase();
+      participant.error = typeof error === 'string' && error.trim() ? error.slice(0, 500) : undefined;
+      participant.updatedAt = new Date();
+      transcription.model = transcription.model || 'Xenova/whisper-tiny';
+      transcription.revision = transcription.revision || '5332fcc35e32a33b86612b9a57a89be7906102b1';
+      message.transcription = transcription;
+      await message.save();
+      return res.json({
+        success: true,
+        data: { transcription: { participant: participantPayload(participant) } },
+      });
+    }
+
+    return res.status(400).json({ success: false, error: 'Unsupported transcript action' });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+}
+
 export async function sendMessage(req, res) {
   try {
     const {
@@ -535,10 +700,11 @@ export async function sendMessage(req, res) {
     if (attachmentId && !mongoose.isValidObjectId(attachmentId)) {
       return res.status(400).json({ success: false, error: 'Invalid attachment id' });
     }
-    const recipient = await User.findById(toOid).select('privacy friends blockedUsers username');
+    const recipient = await User.findById(toOid).select('privacy friends blockedUsers username publicKeys');
     if (!recipient) {
       return res.status(404).json({ success: false, error: 'Recipient not found' });
     }
+    
     const senderBlockedRecipient = (req.user.blockedUsers || []).some((id) => String(id) === String(toOid));
     const recipientBlockedSender = (recipient.blockedUsers || []).some((id) => String(id) === String(req.user._id));
     if (senderBlockedRecipient || recipientBlockedSender) {
@@ -553,6 +719,22 @@ export async function sendMessage(req, res) {
           error: 'Your account is currently restricted from messaging new contacts',
         });
       }
+    }
+        await assertCanDirectMessageWithDoc(req.user._id, recipient);
+
+    const keyList = (keys) => (keys || []).map((k) => String(k).toLowerCase());
+    const recipientKeys = keyList(recipient.publicKeys);
+    const senderKeys = keyList(req.user.publicKeys);
+    const recipientTargetOk =
+      recipientKeys.length === 0 || recipientKeys.includes(String(forRecipient.targetPublicKey).toLowerCase());
+    const senderTargetOk =
+      senderKeys.length === 0 || senderKeys.includes(String(forSender.targetPublicKey).toLowerCase());
+    if (!recipientTargetOk || !senderTargetOk) {
+      return res.status(400).json({
+        success: false,
+        error: 'Envelopes must be sealed to a registered key of the intended person',
+        code: 'ENVELOPE_KEY_MISMATCH',
+      });
     }
     await assertCanDirectMessageWithDoc(req.user._id, recipient);
     const expiresAt = resolveExpiresAt(expiresInSeconds);

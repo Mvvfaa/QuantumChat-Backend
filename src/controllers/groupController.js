@@ -19,11 +19,17 @@ const ATTACHMENT_POPULATE =
 const MEMBER_POPULATE =
   'username email publicKeys lastLoginAt keyRotatedAt avatarPath isSystemUser systemRole verified privacy friends';
 
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
+
+function decodedLength(value) {
+  return typeof value === 'string' && BASE64.test(value) ? Buffer.from(value, 'base64').length : -1;
+}
+
 function validateEnvelope(envelope) {
+  if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) return false;
   return (
-    envelope &&
-    typeof envelope.ciphertext === 'string' &&
-    typeof envelope.nonce === 'string' &&
+    decodedLength(envelope.ciphertext) >= 16 && // nacl box adds a 16-byte authentication tag
+    decodedLength(envelope.nonce) === 24 && // nacl nonce length
     HEX_64.test(envelope.ephemeralPublicKey || '') &&
     HEX_64.test(envelope.targetPublicKey || '')
   );
@@ -1355,12 +1361,16 @@ export async function sendGroupMessage(req, res) {
       const attachmentDoc = await Attachment.findById(toObjectId(attachmentId)).select('mimetype filename');
       const mime = String(attachmentDoc?.mimetype || '').toLowerCase();
       const name = String(attachmentDoc?.filename || '').toLowerCase();
-      if (mime.startsWith('audio/') || /\.(webm|ogg|mp3|m4a|wav|aac)$/i.test(name) || /^voice-note/i.test(name)) {
+      if (mime.startsWith('video/')) {
+        mediaCategory = 'video';
+      } else if (mime.startsWith('audio/') || /^voice-note/i.test(name)) {
         mediaCategory = 'voice';
       } else if (mime.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp)$/i.test(name)) {
         mediaCategory = 'photo';
-      } else if (mime.startsWith('video/') || /\.(mp4|webm|mov|mkv|avi)$/i.test(name)) {
+      } else if (/\.(mp4|webm|mov|mkv|avi)$/i.test(name)) {
         mediaCategory = 'video';
+      } else if (/\.(ogg|mp3|m4a|wav|aac)$/i.test(name)) {
+        mediaCategory = 'voice';
       } else {
         mediaCategory = 'document';
       }

@@ -60,7 +60,7 @@ test('whoCanMessage gate blocks messaging from unauthorized senders', async () =
     body: JSON.stringify({
       to: userA.user.id,
       forRecipient: envA,
-      forSender: envA,
+      forSender: sealForPublicKey('test msg', userB.user.publicKeys[0]),
     }),
   });
   assert.equal(blocked.status, 403);
@@ -89,7 +89,7 @@ test('whoCanMessage gate blocks messaging from unauthorized senders', async () =
     body: JSON.stringify({
       to: userA.user.id,
       forRecipient: envA,
-      forSender: envA,
+         forSender: sealForPublicKey('test msg', userB.user.publicKeys[0]),
     }),
   });
   assert.equal(allowed.status, 201);

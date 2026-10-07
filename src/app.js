@@ -172,10 +172,9 @@ app.use('/api/notifications', notificationRoutes);
   app.use((req, res) => {
     res.status(404).json({ success: false, error: 'Not found' });
   });
-
   // eslint-disable-next-line no-unused-vars
   app.use((err, req, res, next) => {
-    console.error(err);
+    console.error('[error]', err.status || 500, err.type || err.name, req.method, req.path);
     if (err?.code === 'LIMIT_UNEXPECTED_FILE') {
       return res.status(400).json({
         success: false,
