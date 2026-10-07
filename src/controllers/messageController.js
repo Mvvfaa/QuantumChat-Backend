@@ -6,6 +6,7 @@ import Group from '../models/Group.js';
 import Message from '../models/Message.js';
 import User from '../models/User.js';
 import { incrementCiphertextsRelayed } from '../services/blindnessStats.js';
+import { createNotification } from '../services/notificationService.js';
 import { notifyUser } from '../services/pushService.js';
 import { conversationKey, parseConversationKey } from '../utils/conversationKey.js';
 import { notExpiredFilter, resolveExpiresAt } from '../utils/messageExpiry.js';
@@ -1243,6 +1244,18 @@ export async function reactToMessage(req, res) {
             data: { messageId: message._id.toString(), fromUserId: reactorId },
           }).catch(() => {});
         }
+        const authorId = message.from.toString();
+        if (authorId !== reactorId) {
+          createNotification({
+            recipient: authorId,
+            actor: req.user._id,
+            type: 'MESSAGE_REACTION',
+            entityType: 'message',
+            entityId: message._id,
+            metadata: { groupId: message.group },
+            io,
+          }).catch(() => {});
+        }
       } else {
         const otherPartyId =
           message.from.toString() === reactorId ? message.to?.toString() : message.from.toString();
@@ -1254,6 +1267,14 @@ export async function reactToMessage(req, res) {
             conversationKey: conversationKey({ from: message.from, to: message.to }),
             url: `/chat/${reactorId}`,
             data: { messageId: message._id.toString(), fromUserId: reactorId },
+          }).catch(() => {});
+          createNotification({
+            recipient: otherPartyId,
+            actor: req.user._id,
+            type: 'MESSAGE_REACTION',
+            entityType: 'message',
+            entityId: message._id,
+            io,
           }).catch(() => {});
         }
       }

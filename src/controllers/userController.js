@@ -4,6 +4,7 @@ import FriendRequest from '../models/FriendRequest.js';
 import Group from '../models/Group.js';
 import Message from '../models/Message.js';
 import User, { KEY_SET_SIZE } from '../models/User.js';
+import { createNotification } from '../services/notificationService.js';
 import { generateTransliteratedNames } from '../services/transliterationService.js';
 import { conversationKey } from '../utils/conversationKey.js';
 import { appBaseUrl } from '../utils/mail.js';
@@ -1222,6 +1223,17 @@ async function acceptFriendRequestRecord(request, req) {
     id: request._id,
     friend: fromUser.toPublicJSON(request.to),
   });
+  // Only the original requester gets notified here — request.to is the
+  // person who just took the accept action, they don't need telling about
+  // their own action.
+  createNotification({
+    recipient: request.from,
+    actor: request.to,
+    type: 'FRIEND_REQUEST_ACCEPTED',
+    entityType: 'friend_request',
+    entityId: request._id,
+    io,
+  }).catch(() => {});
 }
 
 export async function sendFriendRequest(req, res) {
@@ -1279,6 +1291,15 @@ export async function sendFriendRequest(req, res) {
       id: request._id,
       from: req.user.toPublicJSON(),
     });
+
+    createNotification({
+      recipient: target._id,
+      actor: req.user._id,
+      type: 'FRIEND_REQUEST',
+      entityType: 'friend_request',
+      entityId: request._id,
+      io,
+    }).catch(() => {});
 
     res.status(201).json({ success: true, data: { id: request._id, status: 'pending' } });
   } catch (err) {
