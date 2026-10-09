@@ -4,6 +4,7 @@ const NOTIFICATION_TYPES = [
   'FRIEND_REQUEST',
   'FRIEND_REQUEST_ACCEPTED',
   'MESSAGE_REACTION',
+  'NEW_MESSAGE',
   'GROUP_MENTION',
   'STORY_MENTION',
   'STORY_REPLY',
@@ -24,10 +25,14 @@ const notificationSchema = new mongoose.Schema(
     actor: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     type: { type: String, enum: NOTIFICATION_TYPES, required: true },
     entityType: { type: String, enum: ENTITY_TYPES, required: true },
+    // Mixed rather than strict ObjectId: a missed call's "entity" is a
+    // client-generated callId string (CallSignal.callId), not a Mongo
+    // document id, so this has to accept either shape.
     entityId: { type: mongoose.Schema.Types.Mixed, required: true },
     // Type-specific, non-sensitive extras for rendering (e.g. { mentionType:
-    // 'hidden' } for a story mention, { groupId } for a group event). Never
-    // put message/story plaintext here — this collection has no encryption
+    // 'hidden' } for a story mention, { groupId } for a group event,
+    // { conversationKey, count } for new messages). Never put
+    // message/story plaintext here — this collection has no encryption
     // of its own.
     metadata: { type: mongoose.Schema.Types.Mixed, default: undefined },
     readAt: { type: Date, default: null },

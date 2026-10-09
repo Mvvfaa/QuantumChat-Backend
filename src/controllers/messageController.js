@@ -6,16 +6,16 @@ import Group from '../models/Group.js';
 import Message from '../models/Message.js';
 import User from '../models/User.js';
 import { incrementCiphertextsRelayed } from '../services/blindnessStats.js';
-import { createNotification } from '../services/notificationService.js';
+import { clearMessageNotifications, createNotification, isUserOnline, upsertMessageNotification } from '../services/notificationService.js';
 import { notifyUser } from '../services/pushService.js';
 import { conversationKey, parseConversationKey } from '../utils/conversationKey.js';
 import { notExpiredFilter, resolveExpiresAt } from '../utils/messageExpiry.js';
 import { sealForPublicKey } from '../utils/sealedBox.js';
+import { toObjectId } from '../utils/toObjectId.js';
 import {
   getDirectTranscriptTargetKey,
   isDirectTranscriptTargetAllowed,
 } from '../utils/transcriptionAccess.js';
-import { toObjectId } from '../utils/toObjectId.js';
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
 const ATTACHMENT_POPULATE =
@@ -848,6 +848,13 @@ export async function sendMessage(req, res) {
         ],
         data: { fromUserId: String(req.user._id) },
       }).catch(() => { });
+      if (!isUserOnline(io, toOid)) {
+      upsertMessageNotification({
+        recipient: toOid, actor: req.user._id,
+        conversationKey: conversationKey({ from: req.user._id, to: toOid }),
+        messageId: message._id, io,
+      }).catch(() => { });
+    }
     }
 
     incrementCiphertextsRelayed();
@@ -1197,6 +1204,7 @@ export async function markConversationRead(req, res) {
       return res.status(400).json({ success: false, error: 'Invalid user id' });
     }
     const now = new Date();
+    clearMessageNotifications(req.user._id, conversationKey({ from: userId, to: req.user._id })).catch(() => { });
     if (!allowsReadReceipts(req.user.privacy)) {
       const delivered = await Message.updateMany(
         { from: userId, to: req.user._id, deliveredAt: null },

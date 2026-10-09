@@ -50,6 +50,77 @@ export async function createNotification({
   return doc;
 }
 
+/**
+ * True when the user has at least one live socket connected. Every
+ * authenticated socket joins a room named after its user id (that's what
+ * every `io.to(userId).emit(...)` in the codebase relies on), so the room
+ * existing and being non-empty means "has the app open somewhere right
+ * now".
+ *
+ * If `io` isn't available at all (e.g. a serverless request handler that
+ * isn't the process holding the sockets) we can't tell, so this returns
+ * false and callers fall back to "treat as offline" — the notification
+ * then simply gets created and is cleared the moment the conversation is
+ * read (see clearMessageNotifications).
+ */
+export function isUserOnline(io, userId) {
+  const rooms = io?.sockets?.adapter?.rooms;
+  if (!rooms) return false;
+  const room = rooms.get(String(userId));
+  return Boolean(room && room.size > 0);
+}
+
+/**
+ * One rolled-up "X sent you N messages" row per (recipient, conversation)
+ * instead of one row per message — otherwise a chatty friend would bury the
+ * whole Activity feed. Replaces the existing unread row for that
+ * conversation with a fresh one carrying count + 1, so it also moves back to
+ * the top of the feed. Contains no message text, only a count, which keeps
+ * this compatible with the end-to-end encryption model (the server never
+ * has plaintext to put here in the first place).
+ */
+export async function upsertMessageNotification({ recipient, actor, conversationKey, messageId, io }) {
+  const recipientId = String(recipient);
+  const actorId = String(actor);
+  if (recipientId === actorId) return null;
+
+  const existing = await Notification.findOneAndDelete({
+    recipient: recipientId,
+    type: 'NEW_MESSAGE',
+    readAt: null,
+    'metadata.conversationKey': conversationKey,
+  });
+  const previousCount = Number(existing?.metadata?.count) || 0;
+
+  const doc = await Notification.create({
+    recipient: recipientId,
+    actor: actorId,
+    type: 'NEW_MESSAGE',
+    entityType: 'message',
+    entityId: messageId,
+    metadata: { conversationKey, count: previousCount + 1 },
+  });
+
+  if (io) {
+    io.to(recipientId).emit('notification:new', doc.toPublicJSON());
+  }
+  return doc;
+}
+
+/** Marks the rolled-up new-message row for one conversation as read. */
+export async function clearMessageNotifications(userId, conversationKey) {
+  const result = await Notification.updateMany(
+    {
+      recipient: userId,
+      type: 'NEW_MESSAGE',
+      readAt: null,
+      'metadata.conversationKey': conversationKey,
+    },
+    { $set: { readAt: new Date() } }
+  );
+  return result.modifiedCount;
+}
+
 export async function getUnreadCount(userId) {
   return Notification.countDocuments({ recipient: userId, readAt: null });
 }

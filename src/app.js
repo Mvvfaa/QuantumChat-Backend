@@ -150,6 +150,7 @@ app.use('/api/activity', activityRoutes);
   }, authRoutes);
   app.use('/api/users/sessions/link', deviceLinkRoutes);
   app.use('/api/activity', activityRoutes);
+app.use('/api/notifications', notificationRoutes);   
 app.use('/api/notifications', notificationRoutes);
   app.use('/api/users', userRoutes);
   app.use('/api/messages', messageRoutes);
