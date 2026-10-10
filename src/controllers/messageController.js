@@ -6,15 +6,16 @@ import Group from '../models/Group.js';
 import Message from '../models/Message.js';
 import User from '../models/User.js';
 import { incrementCiphertextsRelayed } from '../services/blindnessStats.js';
+import { clearMessageNotifications, createNotification, isUserOnline, upsertMessageNotification } from '../services/notificationService.js';
 import { notifyUser } from '../services/pushService.js';
 import { conversationKey, parseConversationKey } from '../utils/conversationKey.js';
 import { notExpiredFilter, resolveExpiresAt } from '../utils/messageExpiry.js';
 import { sealForPublicKey } from '../utils/sealedBox.js';
+import { toObjectId } from '../utils/toObjectId.js';
 import {
   getDirectTranscriptTargetKey,
   isDirectTranscriptTargetAllowed,
 } from '../utils/transcriptionAccess.js';
-import { toObjectId } from '../utils/toObjectId.js';
 
 const HEX_64 = /^[0-9a-f]{64}$/i;
 const ATTACHMENT_POPULATE =
@@ -847,6 +848,13 @@ export async function sendMessage(req, res) {
         ],
         data: { fromUserId: String(req.user._id) },
       }).catch(() => { });
+      if (!isUserOnline(io, toOid)) {
+      upsertMessageNotification({
+        recipient: toOid, actor: req.user._id,
+        conversationKey: conversationKey({ from: req.user._id, to: toOid }),
+        messageId: message._id, io,
+      }).catch(() => { });
+    }
     }
 
     incrementCiphertextsRelayed();
@@ -1196,6 +1204,7 @@ export async function markConversationRead(req, res) {
       return res.status(400).json({ success: false, error: 'Invalid user id' });
     }
     const now = new Date();
+    clearMessageNotifications(req.user._id, conversationKey({ from: userId, to: req.user._id })).catch(() => { });
     if (!allowsReadReceipts(req.user.privacy)) {
       const delivered = await Message.updateMany(
         { from: userId, to: req.user._id, deliveredAt: null },
@@ -1425,6 +1434,18 @@ export async function reactToMessage(req, res) {
             data: { messageId: message._id.toString(), fromUserId: reactorId },
           }).catch(() => {});
         }
+        const authorId = message.from.toString();
+        if (authorId !== reactorId) {
+          createNotification({
+            recipient: authorId,
+            actor: req.user._id,
+            type: 'MESSAGE_REACTION',
+            entityType: 'message',
+            entityId: message._id,
+            metadata: { groupId: message.group },
+            io,
+          }).catch(() => {});
+        }
       } else {
         const otherPartyId =
           message.from.toString() === reactorId ? message.to?.toString() : message.from.toString();
@@ -1436,6 +1457,14 @@ export async function reactToMessage(req, res) {
             conversationKey: conversationKey({ from: message.from, to: message.to }),
             url: `/chat/${reactorId}`,
             data: { messageId: message._id.toString(), fromUserId: reactorId },
+          }).catch(() => {});
+          createNotification({
+            recipient: otherPartyId,
+            actor: req.user._id,
+            type: 'MESSAGE_REACTION',
+            entityType: 'message',
+            entityId: message._id,
+            io,
           }).catch(() => {});
         }
       }

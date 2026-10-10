@@ -1,5 +1,6 @@
 import { toClientMessage } from '../controllers/messageController.js';
 import Message from '../models/Message.js';
+import { isUserOnline, upsertMessageNotification } from '../services/notificationService.js';
 import { notifyUser } from '../services/pushService.js';
 import { conversationKey } from '../utils/conversationKey.js';
 
@@ -58,6 +59,11 @@ export async function runTimeCapsuleDelivery(io) {
       }).catch((error) => {
         console.error(`Failed to send time-capsule unlock notification to ${toId}:`, error);
       });
+      if (!isUserOnline(io, toId)) upsertMessageNotification({
+      recipient: toId, actor: fromId,
+      conversationKey: conversationKey({ from: message.from, to: message.to }),
+      messageId: message._id, io,
+    }).catch(() => {});
     }
 
     deliveredCount += 1;

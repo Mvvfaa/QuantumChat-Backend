@@ -1,10 +1,11 @@
 import jwt from 'jsonwebtoken';
-import User from '../models/User.js';
+import CallSignal from '../models/CallSignal.js';
 import DeviceSession from '../models/DeviceSession.js';
-import { isSealedEnvelope, canUserInviteToCall } from '../utils/callEnvelope.js';
-import { canViewerSeeUserOnline } from '../utils/presencePrivacy.js';
+import User from '../models/User.js';
+import { createNotification } from '../services/notificationService.js';
 import { notifyUser } from '../services/pushService.js';
-
+import { canUserInviteToCall, isSealedEnvelope } from '../utils/callEnvelope.js';
+import { canViewerSeeUserOnline } from '../utils/presencePrivacy.js';
 const onlineUsers = new Map(); // userId -> Set(socketId)
 
 function setOnline(userId, socketId) {
@@ -236,6 +237,37 @@ export function attachSocket(io) {
           url: '/chat',
           requireInteraction: true,
         }).catch(() => {});
+      }
+      // Missed-call detection (1:1 calls only). Persist the few events that
+      // matter, then at hangup check whether it was ever actually answered.
+      if (['call:invite', 'call:accept', 'call:hangup'].includes(eventName)) {
+        CallSignal.create({ from: userId, to, callId: String(callId), event: eventName, envelope }).catch(() => {});
+      }
+      if (eventName === 'call:hangup') {
+        (async () => {
+          try {
+            const callIdStr = String(callId);
+            const [wasInviter, hadAccept] = await Promise.all([
+              CallSignal.exists({ callId: callIdStr, event: 'call:invite', from: userId }),
+              CallSignal.exists({ callId: callIdStr, event: 'call:accept' }),
+            ]);
+            // Only the original caller giving up before any accept counts as
+            // "missed" — the callee hanging up after answering doesn't.
+            if (wasInviter && !hadAccept) {
+              createNotification({
+                recipient: to,
+                actor: userId,
+                type: 'MISSED_CALL',
+                entityType: 'call',
+                entityId: callIdStr,
+                metadata: { callId: callIdStr },
+                io,
+              }).catch(() => {});
+            }
+          } catch {
+            // Best-effort — never worth failing the actual hangup relay over.
+          }
+        })();
       }
     }
 

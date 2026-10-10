@@ -3,6 +3,7 @@ import Message from '../models/Message.js';
 import User from '../models/User.js';
 import { conversationKey } from '../utils/conversationKey.js';
 import { sealForPublicKey } from '../utils/sealedBox.js';
+import { createNotification } from './notificationService.js';
 import { notifyUser } from './pushService.js';
 
 /**
@@ -63,6 +64,20 @@ export async function sendStoryMentionMessages(io, story) {
           { action: 'mark_read', title: 'Mark as Read' },
         ],
         data: { fromUserId: authorId },
+      }).catch(() => {});
+      // No `push` passed here — the notifyUser() call just above already
+      // covers the push for this event (it's the same DM-send push every
+      // normal message gets). This just persists it for the Activity feed
+      // and unread count, and emits the live in-app event.
+      createNotification({
+        recipient: mentionedId,
+        actor: authorId,
+        type: 'STORY_MENTION',
+        entityType: 'story',
+        entityId: story._id,
+        metadata: { mentionType: m.visibility },
+        expiresAt: story.expiresAt || null,
+        io,
       }).catch(() => {});
     } catch (err) {
       console.error(`Failed to send story-mention message to ${mentionedId}:`, err.message);

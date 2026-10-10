@@ -1,9 +1,9 @@
 import CallSignal from '../models/CallSignal.js';
 import User from '../models/User.js';
+import { createNotification } from '../services/notificationService.js';
 import { notifyUser } from '../services/pushService.js';
 import { canUserInviteToCall, isSealedEnvelope } from '../utils/callEnvelope.js';
 import { toObjectId } from '../utils/toObjectId.js';
-
 const ALLOWED_EVENTS = new Set([
   'call:invite',
   'call:accept',
@@ -102,6 +102,28 @@ export async function createCallSignal(req, res) {
     });
 
     pushIncomingCall(recipientId, event, callId.trim(), req.user);
+    if (event === 'call:hangup') {
+  const callIdStr = callId.trim();
+  Promise.all([
+    CallSignal.exists({ callId: callIdStr, event: 'call:invite', from: req.user._id }),
+    CallSignal.exists({ callId: callIdStr, event: 'call:accept' }),
+  ])
+    .then(([wasInviter, hadAccept]) => {
+      if (wasInviter && !hadAccept) {
+        return createNotification({
+          recipient: recipientId,
+          actor: req.user._id,
+          type: 'MISSED_CALL',
+          entityType: 'call',
+          entityId: callIdStr,
+          metadata: { callId: callIdStr },
+          io: req.app.get('io'),
+        });
+      }
+      return null;
+    })
+    .catch(() => {});
+}
 
     return res.status(201).json({
       success: true,

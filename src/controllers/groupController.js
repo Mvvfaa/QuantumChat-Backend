@@ -6,6 +6,7 @@ import GroupJoinRequest from '../models/GroupJoinRequest.js';
 import Message from '../models/Message.js';
 import User from '../models/User.js';
 import { incrementCiphertextsRelayed } from '../services/blindnessStats.js';
+import { createNotification } from '../services/notificationService.js';
 import { notifyUser } from '../services/pushService.js';
 import { notExpiredFilter, resolveExpiresAt } from '../utils/messageExpiry.js';
 import { sealForPublicKey } from '../utils/sealedBox.js';
@@ -1419,6 +1420,15 @@ export async function sendGroupMessage(req, res) {
     for (const mid of mentions) {
       if (mid !== String(req.user._id)) {
         io?.to(mid).emit('mention:new', { groupId, messageId: payload.id, from: String(req.user._id) });
+        createNotification({
+          recipient: mid,
+          actor: req.user._id,
+          type: 'GROUP_MENTION',
+          entityType: 'message',
+          entityId: message._id,
+          metadata: { groupId },
+          io,
+        }).catch(() => {});
       }
     }
     const senderId = String(req.user._id);
