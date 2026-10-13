@@ -1026,28 +1026,42 @@ export async function deleteAccount(req, res) {
 
 export async function discoverUsers(req, res) {
   try {
-    const blockedIds = (req.user.blockedUsers || []).map((id) => String(id));
-    const friendIds = (req.user.friends || []).map((id) => String(id));
+    // Exclude self / friends / blocked in the query BEFORE limiting so users
+    // with large friend lists still get a full page of discoverable people.
+    const blockedIds = (req.user.blockedUsers || [])
+      .map((id) => toObjectId(id))
+      .filter(Boolean);
+    const friendIds = (req.user.friends || [])
+      .map((id) => toObjectId(id))
+      .filter(Boolean);
+    const excludeIds = [req.user._id, ...blockedIds, ...friendIds];
     const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 200, 1), 500);
+    const cursor = req.query.cursor ? toObjectId(req.query.cursor) : null;
 
     const filter = {
-      _id: { $ne: req.user._id },
+      _id: { $nin: excludeIds },
       isSystemUser: { $ne: true },
+      // Missing privacy.discoverable still matches (treated as "everyone").
+      'privacy.discoverable': { $nin: ['nobody'] },
     };
+    if (cursor) {
+      filter._id = { $nin: excludeIds, $gt: cursor };
+    }
     if (q) {
+      const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       filter.$or = [
-        { username: { $regex: q, $options: 'i' } },
-        { displayName: { $regex: q, $options: 'i' } },
+        { username: { $regex: escaped, $options: 'i' } },
+        { displayName: { $regex: escaped, $options: 'i' } },
       ];
     }
 
-    const users = await User.find(filter).select(PUBLIC_FIELDS).limit(100);
-    const candidates = users.filter(
-      (u) =>
-        !blockedIds.includes(String(u._id)) &&
-        !friendIds.includes(String(u._id)) &&
-        (u.privacy?.discoverable || 'everyone') !== 'nobody'
-    );
+    const rows = await User.find(filter)
+      .sort({ _id: 1 })
+      .limit(limit + 1)
+      .select(PUBLIC_FIELDS);
+    const hasMore = rows.length > limit;
+    const candidates = hasMore ? rows.slice(0, limit) : rows;
     const candidateIds = candidates.map((u) => u._id);
 
     const requests = await FriendRequest.find({
@@ -1076,7 +1090,16 @@ export async function discoverUsers(req, res) {
       };
     });
 
-    res.json({ success: true, data });
+    res.json({
+      success: true,
+      data,
+      meta: {
+        hasMore,
+        nextCursor: candidates.length
+          ? String(candidates[candidates.length - 1]._id)
+          : null,
+      },
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
