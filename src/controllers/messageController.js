@@ -13,7 +13,7 @@ import { notExpiredFilter, resolveExpiresAt } from '../utils/messageExpiry.js';
 import { sealForPublicKey } from '../utils/sealedBox.js';
 import { toObjectId } from '../utils/toObjectId.js';
 import {
-  getDirectTranscriptTargetKey,
+  getTranscriptTargetKey,
   isDirectTranscriptTargetAllowed,
 } from '../utils/transcriptionAccess.js';
 
@@ -196,6 +196,18 @@ export function toClientMessage(doc, viewerId) {
       user: r.user?.toString?.() || String(r.user),
       at: r.at,
     }));
+  }
+  if (Array.isArray(message.listenedBy)) {
+    message.listenedBy = message.listenedBy.map((r) => ({
+      user: r.user?.toString?.() || String(r.user),
+      at: r.at,
+    }));
+  }
+  if (Array.isArray(message.waveform)) {
+    message.waveform = message.waveform;
+  }
+  if (typeof message.durationSeconds === 'number') {
+    message.durationSeconds = message.durationSeconds;
   }
   if (message.viewOnceOpenedBy) {
     message.viewOnceOpenedBy = message.viewOnceOpenedBy?.toString?.() || String(message.viewOnceOpenedBy);
@@ -531,9 +543,15 @@ export async function upsertTranscriptState(req, res) {
     const message = await Message.findById(messageOid);
     if (!message) return res.status(404).json({ success: false, error: 'Message not found' });
     const userId = String(req.user._id);
-    const expectedTargetPublicKey = getDirectTranscriptTargetKey(message, userId);
+    if (message.group) {
+      const group = await Group.findById(message.group);
+      if (!group || !group.isMember(req.user._id)) {
+        return res.status(403).json({ success: false, error: 'Only group members can manage transcript state' });
+      }
+    }
+    const expectedTargetPublicKey = getTranscriptTargetKey(message, userId);
     if (!expectedTargetPublicKey) {
-      return res.status(403).json({ success: false, error: 'Only direct-message participants can manage transcript state' });
+      return res.status(403).json({ success: false, error: 'Only conversation participants can manage transcript state' });
     }
     if (message.viewOnce) {
       return res.status(403).json({ success: false, error: 'View-once voice messages cannot be transcribed' });
@@ -657,6 +675,65 @@ export async function upsertTranscriptState(req, res) {
   }
 }
 
+export async function markVoiceListened(req, res) {
+  try {
+    const { messageId } = req.params;
+    const messageOid = toObjectId(messageId);
+    if (!messageOid) {
+      return res.status(400).json({ success: false, error: 'Invalid message id' });
+    }
+    const message = await Message.findById(messageOid);
+    if (!message) return res.status(404).json({ success: false, error: 'Message not found' });
+
+    const uid = String(req.user._id);
+    if (String(message.from) === uid) {
+      return res.json({ success: true, data: { listenedBy: message.listenedBy || [] } });
+    }
+
+    if (message.group) {
+      const group = await Group.findById(message.group);
+      if (!group || !group.isMember(req.user._id)) {
+        return res.status(403).json({ success: false, error: 'Not authorized' });
+      }
+    } else if (String(message.to) !== uid) {
+      return res.status(403).json({ success: false, error: 'Not authorized' });
+    }
+
+    const already = (message.listenedBy || []).some((entry) => String(entry.user) === uid);
+    if (!already) {
+      message.listenedBy = [...(message.listenedBy || []), { user: req.user._id, at: new Date() }];
+      await message.save();
+    }
+
+    const payload = {
+      id: String(message._id),
+      userId: uid,
+      listenedAt: new Date().toISOString(),
+      listenedBy: (message.listenedBy || []).map((entry) => ({
+        user: entry.user?.toString?.() || String(entry.user),
+        at: entry.at,
+      })),
+    };
+    const io = req.app.get('io');
+    if (message.group) {
+      const GroupModel = (await import('../models/Group.js')).default;
+      const grp = await GroupModel.findById(message.group).select('members');
+      if (grp?.members) {
+        for (const mid of grp.members) {
+          io?.to(String(mid)).emit('message:listened', payload);
+        }
+      }
+      io?.to(`group:${String(message.group)}`).emit('message:listened', payload);
+    } else {
+      io?.to(String(message.from)).emit('message:listened', payload);
+      io?.to(uid).emit('message:listened', payload);
+    }
+    return res.json({ success: true, data: payload });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+}
+
 export async function sendMessage(req, res) {
   try {
     const {
@@ -669,6 +746,8 @@ export async function sendMessage(req, res) {
       forwardedFrom,
       kind,
       expiresInSeconds,
+      waveform,
+      durationSeconds,
       forwardPolicy: forwardPolicyRaw,
       viewOnce: viewOnceRaw,
       timeCapsule: timeCapsuleRaw,
@@ -794,6 +873,8 @@ export async function sendMessage(req, res) {
       forSender: normalizeEnvelope(forSender),
       attachment: attachmentId || undefined,
       mediaCategory,
+      waveform: Array.isArray(waveform) && waveform.length ? waveform.slice(0, 64) : undefined,
+      durationSeconds: Number.isFinite(Number(durationSeconds)) && Number(durationSeconds) > 0 ? Number(durationSeconds) : undefined,
       replyTo: replyToId,
       kind: kind === 'ai_note' ? 'ai_note' : 'text',
       expiresAt: expiresAt || undefined,
@@ -1587,6 +1668,7 @@ export async function getMessageInfo(req, res) {
 
       const deliveredMap = new Map((message.deliveredTo || []).map((d) => [String(d.user), d.at]));
       const readMap = new Map((message.readBy || []).map((r) => [String(r.user), r.at]));
+      const listenedMap = new Map((message.listenedBy || []).map((r) => [String(r.user), r.at]));
 
       const members = group.members
         .filter((m) => String(m._id) !== uid)
@@ -1598,6 +1680,7 @@ export async function getMessageInfo(req, res) {
           hasAvatar: Boolean(m.avatarPath),
           deliveredAt: deliveredMap.get(String(m._id)) || null,
           readAt: readMap.get(String(m._id)) || null,
+          listenedAt: listenedMap.get(String(m._id)) || null,
         }));
 
       return res.json({
@@ -1620,6 +1703,7 @@ export async function getMessageInfo(req, res) {
         isGroup: false,
         deliveredAt: message.deliveredAt || null,
         readAt: message.readAt || null,
+        listenedAt: (message.listenedBy || []).find((entry) => String(entry.user) === String(message.to))?.at || null,
       },
     });
   } catch (err) {

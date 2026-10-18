@@ -39,8 +39,17 @@ export function encodeAnnouncement(body) {
   return encodeGroupPayload({ type: 'announcement', body: String(body || '') });
 }
 
-export function encodeGroupFile({ attachmentId, key, nonce, filename, mimetype, size }) {
-  return encodeGroupPayload({
+export function encodeGroupFile({
+  attachmentId,
+  key,
+  nonce,
+  filename,
+  mimetype,
+  size,
+  waveform,
+  durationSeconds,
+}) {
+  const payload = {
     type: 'file',
     attachmentId,
     key,
@@ -48,7 +57,12 @@ export function encodeGroupFile({ attachmentId, key, nonce, filename, mimetype, 
     filename,
     mimetype,
     size,
-  });
+  };
+  if (Array.isArray(waveform) && waveform.length) payload.waveform = waveform;
+  if (Number.isFinite(durationSeconds) && durationSeconds > 0) {
+    payload.durationSeconds = durationSeconds;
+  }
+  return encodeGroupPayload(payload);
 }
 
 export function extractMentions(text, members = []) {

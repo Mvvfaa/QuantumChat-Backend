@@ -11,6 +11,7 @@ import {
   checkForwardAllowed,
   openViewOnce,
   upsertTranscriptState,
+  markVoiceListened,
   getMessageInfo,
   getImportantMessages,
   markMessageImportant,
@@ -51,6 +52,7 @@ router.get('/important', getImportantMessages);
 router.get('/:messageId/forward-check', checkForwardAllowed);
 router.post('/:messageId/view-once', openViewOnce);
 router.post('/:messageId/transcription', upsertTranscriptState);
+router.post('/:messageId/listened', markVoiceListened);
 router.get('/:messageId/info', getMessageInfo);
 router.post('/:messageId/important', markMessageImportant);
 router.delete('/:messageId/important', unmarkMessageImportant);
