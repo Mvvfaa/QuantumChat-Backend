@@ -6,7 +6,7 @@ import Attachment from '../models/Attachment.js';
 import Group from '../models/Group.js';
 import Message from '../models/Message.js';
 import PendingAttachmentUpload from '../models/PendingAttachmentUpload.js';
-import { getStorage, getStorageProviderName, newObjectName, MAX_ATTACHMENT_SIZE } from '../middleware/upload.js';
+import { getStorage, getStorageProviderName, newObjectName, MAX_ATTACHMENT_SIZE, readStoredObject } from '../middleware/upload.js';
 import { areUsersBlocked } from './userController.js';
 
 function chunkTempPath(pendingId, slot) {
@@ -505,7 +505,7 @@ export async function downloadAttachment(req, res) {
       if (!group || !group.isMember(req.user._id)) {
         return res.status(403).json({ success: false, error: 'Not authorized to access this attachment' });
       }
-      const bytes = await getStorage().read(attachment.storagePath);
+      const bytes = await readStoredObject(attachment.storagePath, attachment.storageProvider);
       res.setHeader('Content-Type', 'application/octet-stream');
       return res.send(bytes);
     }
@@ -518,7 +518,12 @@ export async function downloadAttachment(req, res) {
     const storagePath =
       isOwner && attachment.forSenderStoragePath ? attachment.forSenderStoragePath : attachment.storagePath;
 
-    const bytes = await getStorage().read(storagePath);
+    const bytes = await readStoredObject(
+      storagePath,
+      isOwner && attachment.forSenderStoragePath
+        ? attachment.forSenderStorageProvider || attachment.storageProvider
+        : attachment.storageProvider,
+    );
     res.setHeader('Content-Type', 'application/octet-stream');
     return res.send(bytes);
   } catch (err) {

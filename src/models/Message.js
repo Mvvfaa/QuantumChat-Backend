@@ -100,6 +100,7 @@ const messageSchema = new mongoose.Schema(
     // single deliveredAt/readAt fields above — untouched.
     deliveredTo: { type: [deliveryReceiptSchema], default: undefined },
     readBy: { type: [deliveryReceiptSchema], default: undefined },
+    listenedBy: { type: [deliveryReceiptSchema], default: undefined },
     kind: {
       type: String,
       enum: ['text', 'announcement', 'poll', 'event', 'file', 'ai', 'ai_note', 'system', 'story_mention'],
@@ -116,6 +117,8 @@ const messageSchema = new mongoose.Schema(
       enum: ['photo', 'video', 'voice', 'document'],
       default: undefined,
     },
+    waveform: { type: [Number], default: undefined },
+    durationSeconds: { type: Number, default: undefined },
     mentionedUserIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     aiMetadata: {
       contentHash: { type: String, match: /^[0-9a-f]{64}$/i },
