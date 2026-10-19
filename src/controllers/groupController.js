@@ -79,6 +79,10 @@ function toClientMessage(doc) {
     user: r.user?.toString?.() || String(r.user),
     at: r.at,
   }));
+  message.listenedBy = (message.listenedBy || []).map((l) => ({
+    user: l.user?.toString?.() || String(l.user),
+    at: l.at,
+  }));
   message.mentionedUserIds = (message.mentionedUserIds || []).map((id) => String(id));
   
   message.pollVotes = (message.pollVotes || []).map((v) => ({
