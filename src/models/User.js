@@ -122,6 +122,8 @@ const notificationSettingsSchema = new mongoose.Schema(
     },
      /** Whether this user wants a reminder 5 minutes before a friend's birthday begins. */
     birthdayReminders: { type: Boolean, default: true },
+    /** Notify when a friend (or a group this user is in) goes live. */
+    liveNotifications: { type: Boolean, default: true },
     doNotDisturb: {
       enabled: { type: Boolean, default: false },
       startTime: { type: String, default: '22:00' },

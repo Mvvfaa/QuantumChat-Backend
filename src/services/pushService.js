@@ -211,6 +211,9 @@ async function shouldSendPush(userId, payload) {
     if (mode === 'mentions_only' && !payload?.isMention) return false;
     if (mode === 'important_only' && !payload?.isMention && !payload?.isAnnouncement) return false
   }
+  if (kind === 'live') {
+    if (ns.liveNotifications === false) return false;
+  }
   if (kind === 'call') {
     const cn = ns.callNotifications || {};
     if (cn.voiceCallEnabled === false && cn.videoCallEnabled === false) return false;
