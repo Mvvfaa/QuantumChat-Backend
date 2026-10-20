@@ -161,3 +161,33 @@ export const deviceLinkPublicLimiter = rateLimit({
   keyGenerator: (req) => String(req.ip),
   message: { success: false, error: "Too many device-link requests, please try again shortly" },
 });
+
+/**
+ * IP gate in front of requireAuth for /live — its own store rather than the
+ * shared apiLimiter, so viewers behind one NAT (a household watching the same
+ * stream) don't burn each other's general API budget. High ceiling on
+ * purpose; liveStreamLimiter below is the real per-user cap.
+ */
+export const liveStreamGatewayLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 1000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.method === "OPTIONS",
+  message: { success: false, error: "Too many live stream requests" },
+});
+
+/**
+ * Per-user budget for /live. A host heartbeats every ~10s and a viewer
+ * polls stream status at a similar pace, so this leaves plenty of headroom
+ * for joins, invites and list refreshes on top.
+ */
+export const liveStreamLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 90,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.method === "OPTIONS",
+  keyGenerator: (req) => String(req.user._id),
+  message: { success: false, error: "Too many live stream requests, please try again shortly" },
+});
