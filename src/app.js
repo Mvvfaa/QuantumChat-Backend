@@ -17,6 +17,7 @@ import deviceLinkRoutes from './routes/deviceLinkRoutes.js';
 import gifRoutes from './routes/gifRoutes.js';
 import groupRoutes from './routes/groupRoutes.js';
 import highlightRoutes from './routes/highlightRoutes.js';
+import liveStreamRoutes from './routes/liveStreamRoutes.js';
 import messageRoutes from './routes/messageRoutes.js';
 import notificationRoutes from './routes/notificationRoutes.js';
 import presenceRoutes from './routes/presenceRoutes.js';
@@ -161,6 +162,7 @@ app.use('/api/notifications', notificationRoutes);
   app.use('/api/reports', reportRoutes);
   app.use('/api/trust', trustRoutes);
   app.use('/api/call-signals', callSignalRoutes);
+  app.use('/api/live', liveStreamRoutes);
   app.use('/api/presence', presenceRoutes);
   app.use('/api/chat-themes', chatThemeRoutes);
   // Server-to-server integration surface for other QuantumLogics sites,
