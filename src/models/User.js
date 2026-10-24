@@ -176,6 +176,18 @@ const mutedChatSchema = new mongoose.Schema(
   },
   { _id: false }
 );
+// User-defined chat folders ("Work", "Family"), shown beside the All/Unread/
+// Groups filters. Purely an organising aid for the owner — never exposed to
+// anyone else. Keys use the client's per-viewer format (`dm:<peerId>` /
+// `group:<groupId>`), which is unambiguous because the list is per-user.
+const chatFolderSchema = new mongoose.Schema(
+  {
+    name: { type: String, required: true, trim: true, maxlength: 24 },
+    conversationKeys: { type: [String], default: [] },
+    createdAt: { type: Date, default: Date.now },
+  },
+  { _id: true }
+);
 // Per-user "clear chat" watermark. When a user clears a conversation, we record
 // the moment here rather than deleting any shared message documents — clearing
 // is a *local* action that only hides messages from this user's own view, on all
@@ -349,6 +361,10 @@ const userSchema = new mongoose.Schema(
       type: [mutedChatSchema],
       default: [],
     },
+    chatFolders: {
+      type: [chatFolderSchema],
+      default: [],
+    },
     clearedConversations: {
       type: [clearedChatSchema],
       default: [],
@@ -445,6 +461,18 @@ friends: [
   },
   { timestamps: true }
 );
+
+// Older builds stored statusNotifications: 'favorites_only', later renamed to
+// 'selected'. Mongoose validates the whole document on save, so an account
+// still carrying the old value failed *every* save (chat folders, mute, ...).
+// Upgrade it in place before validation runs.
+userSchema.pre('validate', function upgradeLegacyNotificationSettings(next) {
+  const ns = this.notificationSettings;
+  if (ns && ns.statusNotifications === 'favorites_only') {
+    ns.statusNotifications = 'selected';
+  }
+  next();
+});
 
 userSchema.pre('save', function generateReferralCode(next) {
   if (!this.referralCode) {
@@ -647,6 +675,11 @@ userSchema.methods.toSelfJSON = function toSelfJSON() {
     mutedChats: Array.isArray(this.mutedChats) ? this.mutedChats.map((m) => ({
       conversationKey: m.conversationKey,
       expiresAt: m.expiresAt,
+    })) : [],
+    chatFolders: Array.isArray(this.chatFolders) ? this.chatFolders.map((f) => ({
+      id: String(f._id),
+      name: f.name,
+      conversationKeys: (f.conversationKeys || []).map(String),
     })) : [],
     clearedConversations: Array.isArray(this.clearedConversations) ? this.clearedConversations.map((c) => ({
       conversationKey: c.conversationKey,

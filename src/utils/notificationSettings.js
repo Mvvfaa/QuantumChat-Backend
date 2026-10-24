@@ -31,6 +31,11 @@ export function normalizeNotificationSettings(raw) {
   return {
     ...DEFAULT_NOTIFICATION_SETTINGS,
     ...src,
+    // Legacy name for 'selected' (see the pre-validate hook in User.js).
+    statusNotifications:
+      src.statusNotifications === 'favorites_only'
+        ? 'selected'
+        : src.statusNotifications || DEFAULT_NOTIFICATION_SETTINGS.statusNotifications,
     statusNotificationsSelectedFriends: Array.isArray(src.statusNotificationsSelectedFriends)
       ? src.statusNotificationsSelectedFriends.map((id) => String(id._id || id))
       : [],
