@@ -63,6 +63,13 @@ import {
   getPeerVaultDecoyStatus,
 } from '../controllers/vaultMembershipController.js';
 import { readVaultUnlock } from '../middleware/vaultAuth.js';
+import {
+  listChatFolders,
+  createChatFolder,
+  updateChatFolder,
+  setChatFolderMembership,
+  deleteChatFolder,
+} from '../controllers/chatFolderController.js';
 
 const router = Router();
 
@@ -79,6 +86,11 @@ router.get('/me/notification-settings', getNotificationSettings);
 router.put('/me/notification-settings', updateNotificationSettings);
 router.post('/me/mute', muteChat);
 router.post('/me/unmute', unmuteChat);
+router.get('/me/chat-folders', listChatFolders);
+router.post('/me/chat-folders', createChatFolder);
+router.patch('/me/chat-folders/:folderId', updateChatFolder);
+router.put('/me/chat-folders/:folderId/chats', setChatFolderMembership);
+router.delete('/me/chat-folders/:folderId', deleteChatFolder);
 router.post('/me/clear-chat', clearConversation);
 router.post('/me/clear-chat/undo', undoClearConversation);
 router.get('/me/blocked', listBlockedUsers);
